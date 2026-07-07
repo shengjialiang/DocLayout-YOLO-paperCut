@@ -4,10 +4,11 @@ from __future__ import annotations
 import asyncio
 import logging
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, File, Form, UploadFile
-from fastapi.responses import JSONResponse, Response
+from fastapi.responses import FileResponse, JSONResponse, Response
 
 from service.config import Config, load_config
 from service.inference import load_model
@@ -201,6 +202,15 @@ def create_app() -> FastAPI:
             model_imgsz=result["model_imgsz"],
             conf_threshold=result["conf_threshold"],
             device=result["device"],
+        )
+
+    @app.get("/", include_in_schema=False)
+    def root():
+        index_path = Path(__file__).parent / "static" / "index.html"
+        return FileResponse(
+            index_path,
+            media_type="text/html",
+            headers={"Cache-Control": "no-store"},
         )
 
     app.state.service_state = state

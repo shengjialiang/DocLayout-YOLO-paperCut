@@ -239,3 +239,17 @@ def test_predict_serves_concurrent_requests_serially(tmp_path):
             ))
     assert all(r.status_code == 200 for r in responses)
     assert fake_model.predict.call_count == 5
+
+
+def test_get_root_serves_html(tmp_path):
+    """GET / returns index.html."""
+    cfg = _fake_config(str(tmp_path / "m.pt"))
+    with mock.patch("service.app.load_model", return_value=mock.MagicMock()), \
+         mock.patch("service.app.load_config", return_value=cfg):
+        app = create_app()
+        client = TestClient(app)
+        response = client.get("/")
+    assert response.status_code == 200
+    assert "text/html" in response.headers["content-type"]
+    assert "<title>" in response.text
+    assert "no-store" in response.headers.get("cache-control", "")
