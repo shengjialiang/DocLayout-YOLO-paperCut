@@ -83,6 +83,12 @@ dependencies = [
 
 # Optional dependencies ------------------------------------------------------------------------------------------------
 [project.optional-dependencies]
+service = [
+    "fastapi>=0.100",
+    "uvicorn[standard]>=0.23",
+    "python-multipart>=0.0.6",
+    "httpx>=0.24",
+]
 dev = [
     "ipython",
     "check-manifest",
