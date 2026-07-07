@@ -265,8 +265,8 @@ service = [
 **实现要点:**
 - 统一 JSON 错误格式 `{"detail": str, "error_code": str}`
 - 启动失败:`MODEL_PATH` 未设置或加载失败 → uvicorn 直接报错退出,不静默
-- `/health` 区分启动期(503)和运行期(200)
-- 设置请求体大小上限(`uvicorn` `--limit-max-requests` + `python-multipart` 校验)
+- `/health` 在模型未加载完成时返回 503 + `{"status": "starting", "model_loaded": false}`;加载完成后返回 200 + `{"status": "ok", "model_loaded": true}`
+- 请求体大小由应用层校验:fastapi 路由处理前先读 `Content-Length`,超过 `MAX_FILE_SIZE_MB` 直接返回 413(不依赖 web 框架底层,因为 starlette/FastAPI 自身不会硬性限制 multipart 大小)
 - 日志:`uvicorn` 默认 access log + 推理耗时单独打印
 
 ### 启动失败模式
@@ -338,7 +338,7 @@ service = [
 | CPU 推理慢 | 用户等待时间长 | UI 显示"预计 5-15 秒"、有 loading 提示 |
 | 多次上传大图导致内存压力 | OOM | 文件大小限制 + 并发限制 + 推理后立即释放 |
 | 模型初次加载慢 | 启动 5-10s | `/health` 区分启动期,前端逻辑等待加载完成 |
-| 浏览器缓存旧 HTML | 改 HTML 后用户看不到更新 | `<meta charset>` + 文件名加版本号或 `Cache-Control: no-store` |
+| 浏览器缓存旧 HTML | 改 HTML 后用户看不到更新 | 响应头加 `Cache-Control: no-store`;或将 `index.html` 文件名带版本号(`/index-v2.html`) |
 | base64 嵌入大图使 JSON 过大 | 网络传输慢 | 标注图用 jpeg quality=85 压缩,典型 < 500KB;可选将来改为 `/predict/image` 直接拿图 |
 
 ---
