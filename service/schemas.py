@@ -1,7 +1,7 @@
 """Pydantic response schemas for the HTTP service."""
 from __future__ import annotations
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class Detection(BaseModel):
@@ -14,6 +14,7 @@ class Detection(BaseModel):
 
 
 class PredictResponse(BaseModel):
+    model_config = ConfigDict(protected_namespaces=())
     width: int
     height: int
     annotated_image: str = Field(..., description="Data-URL: data:image/jpeg;base64,...")
@@ -26,6 +27,7 @@ class PredictResponse(BaseModel):
 
 
 class HealthResponse(BaseModel):
+    model_config = ConfigDict(protected_namespaces=())
     status: str
     device: str
     model_loaded: bool
