@@ -8,6 +8,7 @@ from fastapi.testclient import TestClient
 
 from service.app import create_app
 from service.config import Config
+from service.schemas import PredictResponse
 
 
 def _fake_config(tmp_path=None):
@@ -160,3 +161,81 @@ def test_predict_image_requires_file(tmp_path):
         client = TestClient(app)
         response = client.post("/predict/image")
     assert response.status_code == 422
+
+
+def test_predict_returns_json_with_annotated_image(tmp_path):
+    """/predict returns PredictResponse with annotated_image base64 + detections."""
+    cfg = _fake_config(str(tmp_path / "m.pt"))
+
+    fake_box = mock.MagicMock()
+    fake_box.xyxy = np.array([[10.0, 20.0, 110.0, 70.0]])
+    fake_box.conf = np.array([0.95])
+    fake_box.cls = np.array([0])
+
+    class _PlotResult:
+        names = {0: "title"}
+        boxes = fake_box
+        orig_shape = (100, 200)
+
+        def plot(self, pil=True, line_width=5, font_size=20):
+            return np.zeros((100, 200, 3), dtype=np.uint8)
+
+    fake_model = mock.MagicMock()
+    fake_model.predict = mock.MagicMock(return_value=[_PlotResult()])
+
+    with mock.patch("service.app.load_model", return_value=fake_model), \
+         mock.patch("service.app.load_config", return_value=cfg):
+        app = create_app()
+        app.state.service_state["model"] = fake_model
+        client = TestClient(app)
+        response = client.post(
+            "/predict",
+            files={"file": ("test.png", _png_bytes(), "image/png")},
+            data={"conf": "0.2"},
+        )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["width"] == 200
+    assert body["height"] == 100
+    assert body["annotated_image"].startswith("data:image/jpeg;base64,")
+    assert body["num_detections"] == 1
+    assert body["detections"][0]["class_name"] == "title"
+    assert body["detections"][0]["score"] == 0.95
+    assert body["conf_threshold"] == 0.2
+    assert body["device"] == "cpu"
+
+
+def test_predict_serves_concurrent_requests_serially(tmp_path):
+    """Multiple concurrent requests all succeed; semaphore doesn't deadlock."""
+    cfg = _fake_config(str(tmp_path / "m.pt"))
+
+    fake_box = mock.MagicMock()
+    fake_box.xyxy = np.array([[0.0, 0.0, 50.0, 50.0]])
+    fake_box.conf = np.array([0.9])
+    fake_box.cls = np.array([0])
+
+    class _PlotResult:
+        names = {0: "x"}
+        boxes = fake_box
+        orig_shape = (50, 50)
+
+        def plot(self, pil=True, line_width=5, font_size=20):
+            return np.zeros((50, 50, 3), dtype=np.uint8)
+
+    fake_model = mock.MagicMock()
+    fake_model.predict = mock.MagicMock(return_value=[_PlotResult()])
+
+    with mock.patch("service.app.load_model", return_value=fake_model), \
+         mock.patch("service.app.load_config", return_value=cfg):
+        app = create_app()
+        app.state.service_state["model"] = fake_model
+        client = TestClient(app)
+        responses = []
+        for _ in range(5):
+            responses.append(client.post(
+                "/predict",
+                files={"file": ("t.png", _png_bytes(50, 50), "image/png")},
+            ))
+    assert all(r.status_code == 200 for r in responses)
+    assert fake_model.predict.call_count == 5

@@ -1,6 +1,7 @@
 """FastAPI application: routes, middleware, entrypoint."""
 from __future__ import annotations
 
+import asyncio
 import logging
 from contextlib import asynccontextmanager
 from typing import Any
@@ -10,7 +11,7 @@ from fastapi.responses import JSONResponse, Response
 
 from service.config import Config, load_config
 from service.inference import load_model
-from service.schemas import HealthResponse
+from service.schemas import HealthResponse, PredictResponse
 
 logger = logging.getLogger("doclayout_service")
 
@@ -18,7 +19,11 @@ logger = logging.getLogger("doclayout_service")
 def create_app() -> FastAPI:
     """Build the FastAPI app. Loads model on lifespan startup."""
     cfg = load_config()
-    state: dict[str, Any] = {"model": None, "config": cfg}
+    state: dict[str, Any] = {
+        "model": None,
+        "config": cfg,
+        "semaphore": asyncio.Semaphore(cfg.max_concurrent),
+    }
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -103,8 +108,7 @@ def create_app() -> FastAPI:
             return JSONResponse(status_code=503, content={"detail": "model not ready", "error_code": "NOT_READY"})
 
         from service.inference import predict_one
-        import asyncio
-        sem = asyncio.Semaphore(cfg.max_concurrent)
+        sem = state["semaphore"]
         try:
             result = await predict_one(
                 image_bytes=raw,
@@ -127,6 +131,77 @@ def create_app() -> FastAPI:
         import base64
         img_bytes = base64.b64decode(b64)
         return Response(content=img_bytes, media_type="image/jpeg")
+
+    @app.post(
+        "/predict",
+        response_model=PredictResponse,
+        responses={
+            400: {"description": "Bad image"},
+            413: {"description": "File too large"},
+            415: {"description": "Unsupported media type"},
+            422: {"description": "Validation error"},
+            503: {"description": "Service not ready"},
+        },
+    )
+    async def predict(
+        file: UploadFile = File(...),
+        conf: float = Form(0.2),
+        imgsz: int = Form(1024),
+        line_width: int = Form(5),
+        font_size: int = Form(20),
+    ):
+        """Run inference and return JSON with annotated image (base64) + detections."""
+        # Validation block (same as /predict/image)
+        if not (0.0 <= conf <= 1.0):
+            return JSONResponse(status_code=422, content={"detail": "conf must be in [0, 1]", "error_code": "INVALID_PARAM"})
+        if not (320 <= imgsz <= 2048):
+            return JSONResponse(status_code=422, content={"detail": "imgsz must be in [320, 2048]", "error_code": "INVALID_PARAM"})
+        if not (1 <= line_width <= 20):
+            return JSONResponse(status_code=422, content={"detail": "line_width must be in [1, 20]", "error_code": "INVALID_PARAM"})
+        if not (8 <= font_size <= 50):
+            return JSONResponse(status_code=422, content={"detail": "font_size must be in [8, 50]", "error_code": "INVALID_PARAM"})
+
+        if not (file.content_type or "").startswith("image/"):
+            return JSONResponse(status_code=415, content={"detail": "unsupported media type", "error_code": "BAD_MIME"})
+
+        raw = await file.read()
+        if len(raw) > cfg.max_file_size_mb * 1024 * 1024:
+            return JSONResponse(status_code=413, content={"detail": f"file too large, max {cfg.max_file_size_mb}MB", "error_code": "FILE_TOO_LARGE"})
+
+        model = state["model"]
+        if model is None:
+            return JSONResponse(status_code=503, content={"detail": "model not ready", "error_code": "NOT_READY"})
+
+        from service.inference import predict_one
+        sem = state["semaphore"]
+        try:
+            result = await predict_one(
+                image_bytes=raw,
+                model=model,
+                semaphore=sem,
+                conf=conf,
+                imgsz=imgsz,
+                line_width=line_width,
+                font_size=font_size,
+                device=cfg.device or "cpu",
+            )
+        except ValueError as exc:
+            return JSONResponse(status_code=400, content={"detail": str(exc), "error_code": "DECODE_ERROR"})
+        except Exception as exc:
+            logger.exception("inference failed")
+            return JSONResponse(status_code=500, content={"detail": f"inference failed: {exc}", "error_code": "INTERNAL"})
+
+        return PredictResponse(
+            width=result["width"],
+            height=result["height"],
+            annotated_image=result["annotated_base64"],
+            detections=result["detections"],
+            num_detections=result["num_detections"],
+            inference_time_ms=result["inference_time_ms"],
+            model_imgsz=result["model_imgsz"],
+            conf_threshold=result["conf_threshold"],
+            device=result["device"],
+        )
 
     app.state.service_state = state
     return app
