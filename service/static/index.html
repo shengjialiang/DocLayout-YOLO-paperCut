@@ -1,0 +1,176 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>DocLayout-YOLO 检测服务</title>
+  <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", sans-serif; max-width: 900px; margin: 20px auto; padding: 0 16px; color: #222; }
+    h1 { font-size: 22px; }
+    .drop-zone { border: 2px dashed #999; padding: 30px; text-align: center; border-radius: 8px; cursor: pointer; background: #fafafa; }
+    .drop-zone.dragging { background: #e8f0fe; border-color: #4285f4; }
+    .params { display: grid; grid-template-columns: 120px 1fr 60px; gap: 8px 12px; margin: 20px 0; align-items: center; }
+    .params label { text-align: right; }
+    button { background: #4285f4; color: white; padding: 10px 20px; border: none; border-radius: 4px; cursor: pointer; font-size: 14px; }
+    button:disabled { background: #ccc; cursor: not-allowed; }
+    .status { margin: 12px 0; padding: 10px; border-radius: 4px; display: none; }
+    .status.show { display: block; }
+    .status.loading { background: #fff3cd; color: #856404; }
+    .status.error { background: #f8d7da; color: #721c24; }
+    .status.success { background: #d4edda; color: #155724; }
+    .result { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 16px; }
+    .result img { max-width: 100%; border: 1px solid #ddd; }
+    table { width: 100%; border-collapse: collapse; margin-top: 16px; }
+    th, td { padding: 6px 8px; border-bottom: 1px solid #eee; text-align: left; font-size: 13px; }
+    th { background: #f5f5f5; }
+  </style>
+</head>
+<body>
+  <h1>DocLayout-YOLO 检测服务</h1>
+
+  <div id="dropZone" class="drop-zone">拖拽图片到这里,或点击选择</div>
+  <input type="file" id="fileInput" accept="image/*" style="display:none">
+
+  <div class="params">
+    <label for="confRange">conf 阈值</label>
+    <input type="range" id="confRange" min="0" max="1" step="0.05" value="0.2">
+    <output id="confOut">0.2</output>
+
+    <label for="imgszRange">imgsz</label>
+    <input type="range" id="imgszRange" min="320" max="2048" step="32" value="1024">
+    <output id="imgszOut">1024</output>
+
+    <label for="lineRange">框线粗细</label>
+    <input type="range" id="lineRange" min="1" max="20" step="1" value="5">
+    <output id="lineOut">5</output>
+
+    <label for="fontRange">标签字号</label>
+    <input type="range" id="fontRange" min="8" max="50" step="1" value="20">
+    <output id="fontOut">20</output>
+  </div>
+
+  <button id="submitBtn" disabled>开始检测</button>
+
+  <div id="status" class="status"></div>
+
+  <h2 id="summary" style="display:none">检测结果</h2>
+  <div class="result" id="result" style="display:none">
+    <div>
+      <p>标注图:</p>
+      <img id="annotatedImg">
+      <p><a id="downloadLink" download="annotated.jpg">下载标注图</a></p>
+    </div>
+    <div>
+      <p>原图:</p>
+      <img id="originalImg">
+    </div>
+  </div>
+
+  <table id="detectionTable" style="display:none">
+    <thead><tr><th>#</th><th>类别</th><th>置信度</th><th>坐标 (x1, y1, x2, y2)</th></tr></thead>
+    <tbody></tbody>
+  </table>
+
+  <script>
+    const dropZone = document.getElementById('dropZone');
+    const fileInput = document.getElementById('fileInput');
+    const submitBtn = document.getElementById('submitBtn');
+    const statusEl = document.getElementById('status');
+    const summary = document.getElementById('summary');
+    const result = document.getElementById('result');
+    const detectionTable = document.getElementById('detectionTable');
+
+    let selectedFile = null;
+
+    function showStatus(text, kind) {
+      statusEl.textContent = text;
+      statusEl.className = 'status show ' + kind;
+    }
+
+    function hideStatus() {
+      statusEl.className = 'status';
+    }
+
+    // Update slider outputs
+    ['confRange', 'imgszRange', 'lineRange', 'fontRange'].forEach(id => {
+      const out = document.getElementById(id.replace('Range', 'Out'));
+      const slider = document.getElementById(id);
+      slider.addEventListener('input', () => out.value = slider.value);
+    });
+
+    // Drag and drop
+    dropZone.addEventListener('click', () => fileInput.click());
+    dropZone.addEventListener('dragover', e => { e.preventDefault(); dropZone.classList.add('dragging'); });
+    dropZone.addEventListener('dragleave', () => dropZone.classList.remove('dragging'));
+    dropZone.addEventListener('drop', e => {
+      e.preventDefault();
+      dropZone.classList.remove('dragging');
+      const f = e.dataTransfer.files[0];
+      if (f) setFile(f);
+    });
+    fileInput.addEventListener('change', () => {
+      if (fileInput.files[0]) setFile(fileInput.files[0]);
+    });
+
+    function setFile(f) {
+      if (!f.type.startsWith('image/')) {
+        showStatus('请上传图片文件', 'error');
+        return;
+      }
+      selectedFile = f;
+      dropZone.textContent = f.name + ' (' + Math.round(f.size / 1024) + ' KB)';
+      submitBtn.disabled = false;
+      hideStatus();
+    }
+
+    submitBtn.addEventListener('click', async () => {
+      if (!selectedFile) return;
+      submitBtn.disabled = true;
+      showStatus('推理中...(CPU 模式下预计 5-15 秒)', 'loading');
+      summary.style.display = 'none';
+      result.style.display = 'none';
+      detectionTable.style.display = 'none';
+
+      const form = new FormData();
+      form.append('file', selectedFile);
+      form.append('conf', document.getElementById('confRange').value);
+      form.append('imgsz', document.getElementById('imgszRange').value);
+      form.append('line_width', document.getElementById('lineRange').value);
+      form.append('font_size', document.getElementById('fontRange').value);
+
+      try {
+        const r = await fetch('/predict', { method: 'POST', body: form });
+        if (!r.ok) {
+          const err = await r.json().catch(() => ({detail: r.statusText}));
+          showStatus('错误: ' + (err.detail || r.status), 'error');
+          submitBtn.disabled = false;
+          return;
+        }
+        const data = await r.json();
+        document.getElementById('annotatedImg').src = data.annotated_image;
+        document.getElementById('originalImg').src = URL.createObjectURL(selectedFile);
+        document.getElementById('downloadLink').href = data.annotated_image;
+
+        summary.style.display = 'block';
+        summary.textContent = `检测结果: ${data.num_detections} 个区域,耗时 ${data.inference_time_ms}ms`;
+        result.style.display = 'grid';
+
+        const tbody = detectionTable.querySelector('tbody');
+        tbody.innerHTML = '';
+        data.detections.forEach(d => {
+          const row = document.createElement('tr');
+          row.innerHTML = `<td>${d.id + 1}</td><td>${d.class_name}</td><td>${d.score.toFixed(3)}</td><td>[${d.bbox_xyxy.map(v => v.toFixed(1)).join(', ')}]</td>`;
+          tbody.appendChild(row);
+        });
+        detectionTable.style.display = data.detections.length > 0 ? 'table' : 'none';
+
+        showStatus('完成', 'success');
+      } catch (e) {
+        showStatus('请求失败: ' + e.message, 'error');
+      } finally {
+        submitBtn.disabled = false;
+      }
+    });
+  </script>
+</body>
+</html>

@@ -83,6 +83,12 @@ dependencies = [
 
 # Optional dependencies ------------------------------------------------------------------------------------------------
 [project.optional-dependencies]
+service = [
+    "fastapi>=0.100",
+    "uvicorn[standard]>=0.23",
+    "python-multipart>=0.0.6",
+    "httpx>=0.24",
+]
 dev = [
     "ipython",
     "check-manifest",
@@ -138,6 +144,7 @@ version = { attr = "doclayout_yolo.__version__" }
 
 [tool.pytest.ini_options]
 addopts = "--doctest-modules --durations=30 --color=yes"
+pythonpath = ["."]
 markers = [
     "slow: skip slow tests unless --slow is set",
 ]
