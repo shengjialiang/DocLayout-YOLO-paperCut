@@ -31,6 +31,12 @@ def fake_yolo_result(boxes):
     return FakeResult(boxes)
 
 
+class mock_ocr_empty:
+    """OCR stub returning no text (used when YOLO yields empty detections)."""
+    def ocr_image(self, img):
+        return []
+
+
 def test_pipeline_runs_through_all_stages(monkeypatch):
     # Mock YOLO predict_one
     async def fake_predict_one(**kwargs):
@@ -103,6 +109,76 @@ def test_pipeline_runs_through_all_stages(monkeypatch):
     # After expand: y1 ~ 90, y2 ~ 210 (per pixel expand of [100, 200])
     # Q1 extended bottom = Q2 top ~ 290
     assert q1.bbox_xyxy[3] == pytest.approx(q2.bbox_xyxy[1], abs=2)
+
+
+def test_pipeline_passes_line_width_and_font_size_to_predict_one(monkeypatch):
+    """line_width and font_size in params must reach predict_one, not be
+    silently hardcoded."""
+    captured: dict = {}
+
+    async def fake_predict_one(**kwargs):
+        captured.update(kwargs)
+        return {
+            "width": 100, "height": 100,
+            "annotated_base64": "data:img",
+            "detections": [],
+            "num_detections": 0,
+            "inference_time_ms": 1,
+            "model_imgsz": 1024, "conf_threshold": 0.3, "device": "cpu",
+        }
+    monkeypatch.setattr("service.inference.predict_one", fake_predict_one)
+    monkeypatch.setattr(pipeline, "OcrEngine", lambda lang="ch": mock_ocr_empty())
+    monkeypatch.setattr(pipeline, "redraw_with_questions",
+                        lambda *a, **k: "data:image/jpeg;base64,redrawn")
+    monkeypatch.setattr(pipeline, "_decode_image_bytes",
+                        lambda b: np.zeros((100, 100, 3), dtype=np.uint8))
+
+    tid = tasks.create_task()
+    pipeline.run_pipeline(
+        tid, b"fake", {
+            "expand_mode": "pixel",
+            "expand_top": 0, "expand_bottom": 0, "expand_left": 0, "expand_right": 0,
+            "conf": 0.25, "imgsz": 800,
+            "line_width": 12, "font_size": 30,
+        },
+        model=None, semaphore=asyncio.Semaphore(1),
+    )
+    assert captured["line_width"] == 12
+    assert captured["font_size"] == 30
+
+
+def test_pipeline_uses_default_line_width_font_size_when_absent(monkeypatch):
+    """When params lacks line_width / font_size, fall back to safe defaults
+    instead of crashing."""
+    captured: dict = {}
+
+    async def fake_predict_one(**kwargs):
+        captured.update(kwargs)
+        return {
+            "width": 100, "height": 100,
+            "annotated_base64": "data:img",
+            "detections": [],
+            "num_detections": 0,
+            "inference_time_ms": 1,
+            "model_imgsz": 1024, "conf_threshold": 0.3, "device": "cpu",
+        }
+    monkeypatch.setattr("service.inference.predict_one", fake_predict_one)
+    monkeypatch.setattr(pipeline, "OcrEngine", lambda lang="ch": mock_ocr_empty())
+    monkeypatch.setattr(pipeline, "redraw_with_questions",
+                        lambda *a, **k: "data:image/jpeg;base64,redrawn")
+    monkeypatch.setattr(pipeline, "_decode_image_bytes",
+                        lambda b: np.zeros((100, 100, 3), dtype=np.uint8))
+
+    tid = tasks.create_task()
+    pipeline.run_pipeline(
+        tid, b"fake", {
+            "expand_mode": "pixel",
+            "expand_top": 0, "expand_bottom": 0, "expand_left": 0, "expand_right": 0,
+        },
+        model=None, semaphore=asyncio.Semaphore(1),
+    )
+    assert captured["line_width"] == 5
+    assert captured["font_size"] == 20
 
 
 def test_pipeline_marks_failed_on_fatal_yolo_error(monkeypatch):

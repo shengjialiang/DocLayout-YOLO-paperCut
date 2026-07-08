@@ -126,3 +126,41 @@ def test_non_image_mime_returns_415(client):
     r = client.post("/predict/exam",
                     files={"file": ("notes.txt", b"plain text", "text/plain")})
     assert r.status_code == 415
+
+
+def test_invalid_conf_for_exam_returns_422(client):
+    r = client.post("/predict/exam",
+                    files={"file": _make_image()},
+                    data={"conf": "1.5"})
+    assert r.status_code == 422
+
+
+def test_invalid_imgsz_for_exam_returns_422(client):
+    r = client.post("/predict/exam",
+                    files={"file": _make_image()},
+                    data={"imgsz": "100"})
+    assert r.status_code == 422
+
+
+def test_invalid_line_width_for_exam_returns_422(client):
+    r = client.post("/predict/exam",
+                    files={"file": _make_image()},
+                    data={"line_width": "50"})
+    assert r.status_code == 422
+
+
+def test_invalid_font_size_for_exam_returns_422(client):
+    r = client.post("/predict/exam",
+                    files={"file": _make_image()},
+                    data={"font_size": "100"})
+    assert r.status_code == 422
+
+
+def test_exam_accepts_custom_yolo_and_draw_params(client):
+    """All four pass-through params accepted with valid values."""
+    r = client.post("/predict/exam",
+                    files={"file": _make_image()},
+                    data={"conf": "0.25", "imgsz": "800",
+                          "line_width": "10", "font_size": "30"})
+    assert r.status_code == 200
+    assert "task_id" in r.json()

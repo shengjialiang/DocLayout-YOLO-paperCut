@@ -96,8 +96,8 @@ def run_pipeline(
                 semaphore=semaphore,
                 conf=params.get("conf", 0.3),
                 imgsz=params.get("imgsz", 1024),
-                line_width=5,
-                font_size=20,
+                line_width=params.get("line_width", 5),
+                font_size=params.get("font_size", 20),
                 device=params.get("device", "cpu"),
             ))
         finally:

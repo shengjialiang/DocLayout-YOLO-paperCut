@@ -87,6 +87,24 @@
     <input type="file" id="fileInputExam" accept="image/*" style="display:none">
 
     <div class="params">
+      <label for="examConfRange">conf 阈值</label>
+      <input type="range" id="examConfRange" min="0" max="1" step="0.05" value="0.3">
+      <output id="examConfOut">0.3</output>
+
+      <label for="examImgszRange">imgsz</label>
+      <input type="range" id="examImgszRange" min="320" max="2048" step="32" value="1024">
+      <output id="examImgszOut">1024</output>
+
+      <label for="examLineRange">框线粗细</label>
+      <input type="range" id="examLineRange" min="1" max="20" step="1" value="5">
+      <output id="examLineOut">5</output>
+
+      <label for="examFontRange">标签字号</label>
+      <input type="range" id="examFontRange" min="8" max="50" step="1" value="20">
+      <output id="examFontOut">20</output>
+    </div>
+
+    <div class="params">
       <label>放大模式</label>
       <div>
         <label><input type="radio" name="expandMode" value="pixel" checked> 像素</label>
@@ -166,7 +184,8 @@
     }
 
     // Update slider outputs
-    ['confRange', 'imgszRange', 'lineRange', 'fontRange'].forEach(id => {
+    ['confRange', 'imgszRange', 'lineRange', 'fontRange',
+     'examConfRange', 'examImgszRange', 'examLineRange', 'examFontRange'].forEach(id => {
       const out = document.getElementById(id.replace('Range', 'Out'));
       const slider = document.getElementById(id);
       slider.addEventListener('input', () => out.value = slider.value);
@@ -334,6 +353,10 @@
       form.append('expand_left', document.getElementById('examExpandLeft').value);
       form.append('expand_right', document.getElementById('examExpandRight').value);
       form.append('question_regex', document.getElementById('examRegex').value);
+      form.append('conf', document.getElementById('examConfRange').value);
+      form.append('imgsz', document.getElementById('examImgszRange').value);
+      form.append('line_width', document.getElementById('examLineRange').value);
+      form.append('font_size', document.getElementById('examFontRange').value);
 
       try {
         const r = await fetch('/predict/exam', { method: 'POST', body: form });

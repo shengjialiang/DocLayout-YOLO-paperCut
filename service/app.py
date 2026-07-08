@@ -259,6 +259,8 @@ def create_app() -> FastAPI:
         question_regex: str | None = Form(None),
         conf: float = Form(0.3),
         imgsz: int = Form(1024),
+        line_width: int = Form(5),
+        font_size: int = Form(20),
     ):
         """Submit a new exam processing task. Returns task_id immediately."""
         # Convert and validate numeric params
@@ -272,6 +274,16 @@ def create_app() -> FastAPI:
                 status_code=422,
                 content={"detail": "expand_* must be numeric", "error_code": "INVALID_PARAM"},
             )
+
+        # Range checks for YOLO / drawing params (same bounds as /predict)
+        if not (0.0 <= conf <= 1.0):
+            return JSONResponse(status_code=422, content={"detail": "conf must be in [0, 1]", "error_code": "INVALID_PARAM"})
+        if not (320 <= imgsz <= 2048):
+            return JSONResponse(status_code=422, content={"detail": "imgsz must be in [320, 2048]", "error_code": "INVALID_PARAM"})
+        if not (1 <= line_width <= 20):
+            return JSONResponse(status_code=422, content={"detail": "line_width must be in [1, 20]", "error_code": "INVALID_PARAM"})
+        if not (8 <= font_size <= 50):
+            return JSONResponse(status_code=422, content={"detail": "font_size must be in [8, 50]", "error_code": "INVALID_PARAM"})
 
         err = _validate_exam_params(
             expand_mode, expand_top_f, expand_bottom_f,
@@ -308,6 +320,8 @@ def create_app() -> FastAPI:
             "question_regex": question_regex,
             "conf": conf,
             "imgsz": imgsz,
+            "line_width": line_width,
+            "font_size": font_size,
             "device": cfg.device or "cpu",
         }
         model = state["model"]
