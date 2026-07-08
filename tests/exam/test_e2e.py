@@ -1,11 +1,21 @@
 """End-to-end test with real PaddleOCR. Marked slow."""
+import os
 import time
 
 import pytest
-from fastapi.testclient import TestClient
 
-from service.app import create_app
-from service.exam import tasks
+pytestmark = pytest.mark.slow
+
+# Skip the entire module at collection time if MODEL_PATH is not set,
+# because the client fixture below calls create_app() which requires it.
+_MODEL_PATH = os.environ.get("MODEL_PATH")
+if not _MODEL_PATH:
+    pytest.skip("MODEL_PATH not set; skipping E2E test", allow_module_level=True)
+
+from fastapi.testclient import TestClient  # noqa: E402
+
+from service.app import create_app  # noqa: E402
+from service.exam import tasks  # noqa: E402
 
 
 @pytest.fixture
@@ -22,7 +32,6 @@ def reset_tasks():
     tasks.reset_for_tests()
 
 
-@pytest.mark.slow
 def test_real_pipeline_with_real_paddleocr(client):
     """Submit, poll until done, verify final has at least one question."""
     with open("assets/example/exam_paper.jpg", "rb") as f:
