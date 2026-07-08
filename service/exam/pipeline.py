@@ -86,7 +86,7 @@ def run_pipeline(task_id: str, image_bytes: bytes, params: dict[str, Any]) -> No
             result = loop.run_until_complete(inference.predict_one(
                 image_bytes=image_bytes,
                 model=None,           # placeholder; predict_one in tests uses fake
-                semaphore=__import__("asyncio").Semaphore(1),
+                semaphore=asyncio.Semaphore(1),
                 conf=params.get("conf", 0.3),
                 imgsz=params.get("imgsz", 1024),
                 line_width=5,
@@ -171,10 +171,6 @@ def run_pipeline(task_id: str, image_bytes: bytes, params: dict[str, Any]) -> No
             matched = is_question(block.text, regex)
             block.is_question = matched
             if matched:
-                src_box = next(
-                    (b for b in detections if b["id"] == block.source_detection_id),
-                    None,
-                )
                 questions.append({
                     "text": block.text,
                     "bbox_xyxy": block.bbox_xyxy,
@@ -221,6 +217,6 @@ def run_pipeline(task_id: str, image_bytes: bytes, params: dict[str, Any]) -> No
         )
         tasks.mark_done(task_id, final)
     except Exception as e:
-        tasks.update_stage(task_id, "geometry", duration_ms=0,
+        tasks.update_stage(task_id, "redraw", duration_ms=0,
                            error=f"redraw failed: {e}")
         tasks.mark_failed(task_id, f"final assembly failed: {e}")
