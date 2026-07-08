@@ -3,12 +3,13 @@ from __future__ import annotations
 
 import re
 
-# Matches: "1.", "1)", "1。", "1、", "(1)", etc.
-DEFAULT_QUESTION_REGEX = r"^\s*\(?\d+[\.。、\)](?!\d)"
+# Matches: "1.", "1)", "1。", "1、", "1．" (fullwidth period), "(1)", etc.
+DEFAULT_QUESTION_REGEX = r"^\s*\(?\d+[\.。．、\)](?!\d)"
 
 # Map of OCR-confused characters that should be '.' in a leading-digit context.
+# Includes fullwidth period ．
 _QUESTION_PUNCT_NORMALIZE = re.compile(
-    r'^(\s*\(?\d+)[。，、：,;:](?!\d)',
+    r'^(\s*\(?\d+)[。，．、：,;:](?!\d)',
 )
 
 

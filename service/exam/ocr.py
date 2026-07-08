@@ -45,28 +45,65 @@ def _run_ocr(engine, img: np.ndarray) -> list[TextBlock]:
     return blocks
 
 
-def _leftmost_chunk(
+def _split_into_chunks(
     img: np.ndarray,
     max_aspect: float = MAX_ASPECT_RATIO,
-) -> np.ndarray:
-    """Crop an extreme-aspect image to its leftmost (or topmost) chunk.
+) -> list[tuple[int, int, np.ndarray]]:
+    """Split an image into multiple overlapping chunks along the longer axis.
 
-    For a wide image, takes the leftmost columns; for a tall image, takes
-    the topmost rows. The returned chunk has aspect ratio ≤ ``max_aspect``.
+    Returns ``[(x_offset, y_offset, crop), ...]`` that together cover the
+    entire input image. For normal-aspect images there is a single
+    full-image chunk with offset (0, 0); for wide images the chunks tile
+    horizontally with overlap; for tall images they tile vertically.
 
-    For images within the aspect budget, returns the input unchanged.
+    Each chunk has aspect ratio ≤ ``max_aspect``.
     """
     H, W = img.shape[:2]
     aspect_w = W / H
     aspect_h = H / W
+
     if aspect_w <= max_aspect and aspect_h <= max_aspect:
-        return img
+        return [(0, 0, img)]
+
     if aspect_w >= aspect_h:
-        chunk_w = min(W, int(H * max_aspect))
-        return img[:, :chunk_w]
+        # Wide image: tile horizontally.
+        chunk_w = int(H * max_aspect)
+        overlap = max(1, int(chunk_w * 0.1))
+        n_chunks = max(2, -(-(W - overlap) // (chunk_w - overlap)))
+        step = max(1, (W - overlap) // n_chunks)
+        chunks: list[tuple[int, int, np.ndarray]] = []
+        for i in range(n_chunks):
+            x1 = i * step
+            x2 = (i + 1) * step + overlap if i < n_chunks - 1 else W
+            chunks.append((x1, 0, img[:, x1:x2]))
+        return chunks
     else:
-        chunk_h = min(H, int(W * max_aspect))
-        return img[:chunk_h, :]
+        # Tall image: tile vertically.
+        chunk_h = int(W * max_aspect)
+        overlap = max(1, int(chunk_h * 0.1))
+        n_chunks = max(2, -(-(H - overlap) // (chunk_h - overlap)))
+        step = max(1, (H - overlap) // n_chunks)
+        chunks = []
+        for i in range(n_chunks):
+            y1 = i * step
+            y2 = (i + 1) * step + overlap if i < n_chunks - 1 else H
+            chunks.append((0, y1, img[y1:y2, :]))
+        return chunks
+
+
+def _leftmost_chunk(
+    img: np.ndarray,
+    max_aspect: float = MAX_ASPECT_RATIO,
+) -> np.ndarray:
+    """Return just the first chunk from ``_split_into_chunks``.
+
+    Always picks the (topmost, leftmost) chunk, regardless of whether the
+    image is normal or extreme aspect. For normal-aspect images where the
+    split collapses to a single full-image chunk, this returns the whole
+    image.
+    """
+    chunks = _split_into_chunks(img, max_aspect=max_aspect)
+    return chunks[0][2]
 
 
 def ocr_leftmost(
@@ -74,13 +111,16 @@ def ocr_leftmost(
     img: np.ndarray,
     max_aspect: float = MAX_ASPECT_RATIO,
 ) -> list[TextBlock]:
-    """OCR ``img``; for extreme aspect ratios, OCR only the leftmost chunk.
+    """OCR only the leftmost (or topmost) chunk of ``img``.
 
     The leading digits of a question number (e.g. "5.") always sit at the
-    leftmost edge of its bounding box, so recognizing just the first chunk
+    leftmost edge of its bounding box, so recognizing just that one chunk
     is enough to decide whether the original crop is a question box — and
-    PaddleOCR's detector only works reliably on that one chunk, not on the
-    full image when the aspect ratio is extreme.
+    PaddleOCR's DB detector only works reliably on chunks whose aspect
+    ratio is sane, not on full extreme-aspect crops.
+
+    Always uses the leftmost chunk, even when the aspect ratio is already
+    within budget: in that case the chunk collapses to the whole image.
     """
     crop = _leftmost_chunk(img, max_aspect=max_aspect)
     return _run_ocr(engine, crop)

@@ -30,6 +30,15 @@
     .crop-item { border: 1px solid #ddd; padding: 3px; max-width: 200px; font-size: 11px; }
     .crop-item img { max-width: 180px; max-height: 80px; display: block; }
     .crop-item .crop-txt { margin-top: 2px; word-break: break-all; color: #555; }
+    .exam-total-time {
+      display: inline-block;
+      margin: -8px 0 12px;
+      padding: 6px 12px;
+      background: #e7f3ff;
+      color: #084c8d;
+      border-radius: 4px;
+      font-size: 13px;
+    }
   </style>
 </head>
 <body>
@@ -133,7 +142,7 @@
       <span id="examExpandRightUnit">px</span>
 
       <label for="examRegex">题号正则</label>
-      <input type="text" id="examRegex" value="^\s*\(?\d+[\.。、\)]" size="30">
+      <input type="text" id="examRegex" value="^\s*\(?\d+[\.。．、\)]" size="30">
       <span></span>
     </div>
 
@@ -142,6 +151,7 @@
     <div id="examStatus" class="status"></div>
 
     <h2 id="examSummary" style="display:none">识别结果</h2>
+    <div id="examTotalTime" class="exam-total-time" style="display:none"></div>
 
     <h3 id="examYoloTitle" style="display:none">YOLO 初始标注</h3>
     <img id="examYoloImg" style="display:none; max-width:100%; border:1px solid #ddd; margin-bottom:12px;">
@@ -290,6 +300,9 @@
     const examSummary = document.getElementById('examSummary');
     const examResult = document.getElementById('examResult');
     const examStagesTitle = document.getElementById('examStagesTitle');
+    const examTotalTimeEl = document.getElementById('examTotalTime');
+    // Captured at "开始识别" click; consumed by renderExamResult. wall-clock ms.
+    let examStartTime = null;
     const examStagesTable = document.getElementById('examStagesTable');
     const examQuestionsTitle = document.getElementById('examQuestionsTitle');
     const examQuestionsTable = document.getElementById('examQuestionsTable');
@@ -354,6 +367,10 @@
     examSubmitBtn.addEventListener('click', async () => {
       if (!examFile) return;
       examSubmitBtn.disabled = true;
+      // Wall-clock timer for "开始检测 → 最终结果"
+      examStartTime = performance.now();
+      examTotalTimeEl.style.display = 'none';
+      examTotalTimeEl.textContent = '';
       showExamStatus('提交任务...', 'loading');
       examSummary.style.display = 'none';
       document.getElementById('examYoloTitle').style.display = 'none';
@@ -429,6 +446,12 @@
       document.getElementById('examDownloadLink').href = final.annotated_image;
       examSummary.style.display = 'block';
       examSummary.textContent = `识别结果: ${final.questions.length} 个题目`;
+      // Total wall-clock duration: click on 开始识别 → final rendered.
+      if (examStartTime !== null) {
+        const elapsedSec = ((performance.now() - examStartTime) / 1000).toFixed(2);
+        examTotalTimeEl.textContent = `总耗时 ${elapsedSec} 秒`;
+        examTotalTimeEl.style.display = 'inline-block';
+      }
       examResult.style.display = 'grid';
 
       // YOLO initial annotated image

@@ -58,6 +58,16 @@ def test_default_regex_matches_chinese_enumeration_comma():
     assert is_question("2、 题目", DEFAULT_QUESTION_REGEX)
 
 
+def test_default_regex_matches_fullwidth_period():
+    """OCR sometimes produces 4． (U+FF0E FULLWIDTH FULL STOP) — must match."""
+    assert is_question("4． 题目", DEFAULT_QUESTION_REGEX)
+
+
+def test_normalize_fullwidth_period_to_english_period():
+    from service.exam.question_filter import normalize_question_number
+    assert normalize_question_number("4． 题目") == "4. 题目"
+
+
 def test_normalize_ocr_dot_to_english_period():
     from service.exam.question_filter import normalize_question_number
     assert normalize_question_number("1。 题目") == "1. 题目"
