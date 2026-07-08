@@ -89,6 +89,10 @@ service = [
     "python-multipart>=0.0.6",
     "httpx>=0.24",
 ]
+exam = [
+    "paddleocr>=2.7",
+    "paddlepaddle>=2.6",
+]
 dev = [
     "ipython",
     "check-manifest",
