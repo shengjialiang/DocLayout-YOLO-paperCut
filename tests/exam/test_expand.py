@@ -51,3 +51,32 @@ def test_pixel_mode_clamps_to_image_bounds():
         img_width=50, img_height=50,
     )
     assert out[0]["bbox_xyxy"] == [0, 0, 50, 50]
+
+
+def test_ratio_mode_expands_proportional_to_box():
+    boxes = [make_box(100, 100, 200, 300)]   # w=100, h=200
+    out = expand_boxes(
+        boxes, mode="ratio",
+        top=0.1, bottom=0.1, left=0.2, right=0.2,
+        img_width=1000, img_height=1000,
+    )
+    # top/bottom = 0.1 * 200 = 20 each
+    # left/right = 0.2 * 100 = 20 each
+    assert out[0]["bbox_xyxy"] == [80, 80, 220, 320]
+
+
+def test_invalid_mode_raises():
+    with pytest.raises(ValueError):
+        expand_boxes(
+            [make_box(0, 0, 10, 10)],
+            mode="bad", top=0, bottom=0, left=0, right=0,
+            img_width=10, img_height=10,
+        )
+
+
+def test_empty_input_returns_empty():
+    out = expand_boxes(
+        [], mode="pixel", top=10, bottom=10, left=10, right=10,
+        img_width=100, img_height=100,
+    )
+    assert out == []
