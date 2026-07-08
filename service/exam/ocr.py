@@ -5,6 +5,11 @@ from dataclasses import dataclass
 
 import numpy as np
 
+# Above this aspect ratio, PaddleOCR's DB text detector fails to find most
+# text lines (returns ~1 block instead of the full text). Empirically
+# determined from real exam crops produced by the YOLO detector.
+MAX_ASPECT_RATIO = 4.0
+
 
 @dataclass
 class TextBlock:
@@ -40,6 +45,47 @@ def _run_ocr(engine, img: np.ndarray) -> list[TextBlock]:
     return blocks
 
 
+def _leftmost_chunk(
+    img: np.ndarray,
+    max_aspect: float = MAX_ASPECT_RATIO,
+) -> np.ndarray:
+    """Crop an extreme-aspect image to its leftmost (or topmost) chunk.
+
+    For a wide image, takes the leftmost columns; for a tall image, takes
+    the topmost rows. The returned chunk has aspect ratio ≤ ``max_aspect``.
+
+    For images within the aspect budget, returns the input unchanged.
+    """
+    H, W = img.shape[:2]
+    aspect_w = W / H
+    aspect_h = H / W
+    if aspect_w <= max_aspect and aspect_h <= max_aspect:
+        return img
+    if aspect_w >= aspect_h:
+        chunk_w = min(W, int(H * max_aspect))
+        return img[:, :chunk_w]
+    else:
+        chunk_h = min(H, int(W * max_aspect))
+        return img[:chunk_h, :]
+
+
+def ocr_leftmost(
+    engine,
+    img: np.ndarray,
+    max_aspect: float = MAX_ASPECT_RATIO,
+) -> list[TextBlock]:
+    """OCR ``img``; for extreme aspect ratios, OCR only the leftmost chunk.
+
+    The leading digits of a question number (e.g. "5.") always sit at the
+    leftmost edge of its bounding box, so recognizing just the first chunk
+    is enough to decide whether the original crop is a question box — and
+    PaddleOCR's detector only works reliably on that one chunk, not on the
+    full image when the aspect ratio is extreme.
+    """
+    crop = _leftmost_chunk(img, max_aspect=max_aspect)
+    return _run_ocr(engine, crop)
+
+
 class OcrEngine:
     """Lazy-loaded PaddleOCR engine.
 
@@ -56,4 +102,4 @@ class OcrEngine:
             # Call without args: tests monkeypatch with no-arg fakes; the
             # production `_load_paddleocr(lang="ch")` has a default value.
             self._engine = _load_paddleocr()
-        return _run_ocr(self._engine, img)
+        return ocr_leftmost(self._engine, img)
