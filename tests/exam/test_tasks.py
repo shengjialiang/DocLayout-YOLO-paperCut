@@ -77,3 +77,35 @@ def test_get_task_serializable_dict():
     # Ensure no internal references / Pydantic models in serializable form
     assert isinstance(state, dict)
     assert isinstance(state["stages"], dict)
+
+
+def test_lru_eviction_when_over_max(monkeypatch):
+    monkeypatch.setattr(tasks, "MAX_TASKS", 3)
+    tids = [tasks.create_task() for _ in range(4)]
+    # The oldest (tids[0]) should be evicted
+    assert tasks.get_task(tids[0]) is None
+    for tid in tids[1:]:
+        assert tasks.get_task(tid) is not None
+
+
+def test_lru_access_promotes_to_most_recent(monkeypatch):
+    monkeypatch.setattr(tasks, "MAX_TASKS", 3)
+    t1 = tasks.create_task()
+    t2 = tasks.create_task()
+    t3 = tasks.create_task()
+    # Access t1 to promote it
+    tasks.get_task(t1)
+    # Adding t4 should evict t2 (now the oldest)
+    t4 = tasks.create_task()
+    assert tasks.get_task(t1) is not None
+    assert tasks.get_task(t2) is None
+    assert tasks.get_task(t3) is not None
+    assert tasks.get_task(t4) is not None
+
+
+def test_ttl_expiration(monkeypatch):
+    monkeypatch.setattr(tasks, "TASK_TTL_SECONDS", 0.1)
+    tid = tasks.create_task()
+    assert tasks.get_task(tid) is not None
+    time.sleep(0.2)
+    assert tasks.get_task(tid) is None
