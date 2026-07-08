@@ -90,8 +90,8 @@ service = [
     "httpx>=0.24",
 ]
 exam = [
-    "paddleocr>=2.7",
-    "paddlepaddle>=2.6",
+    "paddleocr>=2.7,<3.0",
+    "paddlepaddle>=2.6,<3.0",
 ]
 dev = [
     "ipython",
