@@ -1,4 +1,5 @@
 """Pipeline orchestration tests with mocked YOLO + OCR."""
+import asyncio
 import numpy as np
 import pytest
 
@@ -85,7 +86,7 @@ def test_pipeline_runs_through_all_stages(monkeypatch):
         "question_regex": r"^\s*\(?\d+[\.\)](?!\d)",
         "conf": 0.3, "imgsz": 1024,
     }
-    pipeline.run_pipeline(tid, b"fake-image-bytes", params)
+    pipeline.run_pipeline(tid, b"fake-image-bytes", params, model=None, semaphore=asyncio.Semaphore(1))
 
     state = tasks.get_task(tid)
     assert state["status"] == "done"
@@ -112,7 +113,7 @@ def test_pipeline_marks_failed_on_fatal_yolo_error(monkeypatch):
                         lambda b: np.zeros((100, 100, 3), dtype=np.uint8))
 
     tid = tasks.create_task()
-    pipeline.run_pipeline(tid, b"x", {})
+    pipeline.run_pipeline(tid, b"x", {}, model=None, semaphore=asyncio.Semaphore(1))
     state = tasks.get_task(tid)
     assert state["status"] == "failed"
     assert "YOLO" in state["error"]
@@ -133,7 +134,7 @@ def test_pipeline_zero_questions_still_completes(monkeypatch):
                         lambda b: np.zeros((100, 100, 3), dtype=np.uint8))
 
     tid = tasks.create_task()
-    pipeline.run_pipeline(tid, b"x", {})
+    pipeline.run_pipeline(tid, b"x", {}, model=None, semaphore=asyncio.Semaphore(1))
     state = tasks.get_task(tid)
     assert state["status"] == "done"
     assert state["final"].questions == []

@@ -65,7 +65,14 @@ def redraw_with_questions(
     return _encode_jpeg_base64(np.asarray(pil))
 
 
-def run_pipeline(task_id: str, image_bytes: bytes, params: dict[str, Any]) -> None:
+def run_pipeline(
+    task_id: str,
+    image_bytes: bytes,
+    params: dict[str, Any],
+    *,
+    model,                       # injected model (YOLOv10 instance)
+    semaphore,                   # asyncio.Semaphore
+) -> None:
     """Run the 5-stage pipeline for a task. Updates task state in-place."""
     import service.inference as inference
 
@@ -85,8 +92,8 @@ def run_pipeline(task_id: str, image_bytes: bytes, params: dict[str, Any]) -> No
         try:
             result = loop.run_until_complete(inference.predict_one(
                 image_bytes=image_bytes,
-                model=None,           # placeholder; predict_one in tests uses fake
-                semaphore=asyncio.Semaphore(1),
+                model=model,
+                semaphore=semaphore,
                 conf=params.get("conf", 0.3),
                 imgsz=params.get("imgsz", 1024),
                 line_width=5,
