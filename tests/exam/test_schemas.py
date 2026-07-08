@@ -76,6 +76,36 @@ def test_task_status_response_running():
     assert d["stages"]["yolo"]["duration_ms"] == 6500
 
 
+def test_ocr_block_has_crop_image_field():
+    block = OcrBlock(
+        source_detection_id=1,
+        bbox_xyxy=[0.0, 0.0, 100.0, 100.0],
+        text="1. 题", score=0.9, is_question=True,
+        crop_image="data:image/jpeg;base64,/9j/",
+    )
+    assert block.crop_image == "data:image/jpeg;base64,/9j/"
+
+
+def test_ocr_block_crop_image_defaults_to_empty():
+    block = OcrBlock(
+        source_detection_id=1,
+        bbox_xyxy=[0.0, 0.0, 100.0, 100.0],
+        text="1. 题", score=0.9, is_question=True,
+    )
+    assert block.crop_image == ""
+
+
+def test_final_result_has_yolo_annotated_field():
+    final = FinalResult(
+        annotated_image="data:image/jpeg;base64,final",
+        original_image="data:image/jpeg;base64,orig",
+        yolo_annotated="data:image/jpeg;base64,yolo",
+        questions=[],
+        ocr_blocks=[],
+    )
+    assert final.yolo_annotated == "data:image/jpeg;base64,yolo"
+
+
 def test_invalid_bbox_xyxy_wrong_length():
     with pytest.raises(ValidationError):
         Question(

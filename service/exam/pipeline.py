@@ -103,6 +103,7 @@ def run_pipeline(
         finally:
             loop.close()
         detections = result["detections"]
+        yolo_annotated_b64 = result.get("annotated_base64", "")
         tasks.update_stage(task_id, "yolo",
                            duration_ms=int((time.perf_counter() - t0) * 1000),
                            payload={"num_detections": len(detections)})
@@ -159,11 +160,14 @@ def run_pipeline(
                 blocks = []
             full_text = " ".join(b.text for b in blocks) if blocks else ""
             avg_score = sum(b.score for b in blocks) / len(blocks) if blocks else 0.0
+            crop_b64 = _encode_jpeg_base64(
+                cv2.cvtColor(crop, cv2.COLOR_BGR2RGB))
             ocr_blocks.append(OcrBlock(
                 source_detection_id=box["id"],
                 bbox_xyxy=box["bbox_xyxy"],
                 text=full_text, score=avg_score,
                 is_question=False,  # set in filter stage
+                crop_image=crop_b64,
             ))
         ocr_payload = {"num_blocks": len(ocr_blocks)}
         if ocr_failed_count:
@@ -228,6 +232,7 @@ def run_pipeline(
         final = FinalResult(
             annotated_image=annotated_b64,
             original_image=original_b64,
+            yolo_annotated=yolo_annotated_b64,
             questions=question_models,
             ocr_blocks=ocr_blocks,
         )

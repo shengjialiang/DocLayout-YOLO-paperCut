@@ -22,12 +22,14 @@ class OcrBlock(BaseModel):
     text: str
     score: float
     is_question: bool
+    crop_image: str = ""   # base64 JPEG of the cropped region
 
 
 class FinalResult(BaseModel):
     """Pipeline final output."""
     annotated_image: str = Field(..., description="Data-URL: data:image/jpeg;base64,...")
     original_image: str
+    yolo_annotated: str = ""   # YOLO detection image (before OCR)
     questions: list[Question]
     ocr_blocks: list[OcrBlock]
 

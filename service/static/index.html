@@ -26,6 +26,10 @@
     .tabs { display: flex; gap: 4px; margin: 16px 0; border-bottom: 1px solid #ddd; }
     .tab { padding: 8px 16px; background: #f0f0f0; border: 1px solid #ddd; border-bottom: none; cursor: pointer; }
     .tab.active { background: #fff; border-bottom: 1px solid #fff; margin-bottom: -1px; font-weight: bold; }
+    .crops-grid { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 12px; }
+    .crop-item { border: 1px solid #ddd; padding: 3px; max-width: 200px; font-size: 11px; }
+    .crop-item img { max-width: 180px; max-height: 80px; display: block; }
+    .crop-item .crop-txt { margin-top: 2px; word-break: break-all; color: #555; }
   </style>
 </head>
 <body>
@@ -138,6 +142,10 @@
     <div id="examStatus" class="status"></div>
 
     <h2 id="examSummary" style="display:none">识别结果</h2>
+
+    <h3 id="examYoloTitle" style="display:none">YOLO 初始标注</h3>
+    <img id="examYoloImg" style="display:none; max-width:100%; border:1px solid #ddd; margin-bottom:12px;">
+
     <div class="result" id="examResult" style="display:none">
       <div>
         <p>题目标注图:</p>
@@ -149,6 +157,15 @@
         <img id="examOriginalImg">
       </div>
     </div>
+
+    <h3 id="examCropsTitle" style="display:none">裁切区域</h3>
+    <div id="examCropsGrid" class="crops-grid"></div>
+
+    <h3 id="examOcrTitle" style="display:none">OCR 识别结果</h3>
+    <table id="examOcrTable" style="display:none">
+      <thead><tr><th>#</th><th>裁切图</th><th>识别文本</th><th>置信度</th><th>题目?</th></tr></thead>
+      <tbody></tbody>
+    </table>
 
     <h3 id="examStagesTitle" style="display:none">阶段耗时</h3>
     <table id="examStagesTable" style="display:none">
@@ -339,7 +356,13 @@
       examSubmitBtn.disabled = true;
       showExamStatus('提交任务...', 'loading');
       examSummary.style.display = 'none';
+      document.getElementById('examYoloTitle').style.display = 'none';
+      document.getElementById('examYoloImg').style.display = 'none';
       examResult.style.display = 'none';
+      document.getElementById('examCropsTitle').style.display = 'none';
+      document.getElementById('examCropsGrid').innerHTML = '';
+      document.getElementById('examOcrTitle').style.display = 'none';
+      document.getElementById('examOcrTable').style.display = 'none';
       examStagesTitle.style.display = 'none';
       examStagesTable.style.display = 'none';
       examQuestionsTitle.style.display = 'none';
@@ -407,6 +430,48 @@
       examSummary.style.display = 'block';
       examSummary.textContent = `识别结果: ${final.questions.length} 个题目`;
       examResult.style.display = 'grid';
+
+      // YOLO initial annotated image
+      if (final.yolo_annotated) {
+        document.getElementById('examYoloImg').src = final.yolo_annotated;
+        document.getElementById('examYoloImg').style.display = 'block';
+        document.getElementById('examYoloTitle').style.display = 'block';
+      }
+
+      // Crop grid
+      const cropsGrid = document.getElementById('examCropsGrid');
+      cropsGrid.innerHTML = '';
+      const blocks = final.ocr_blocks || [];
+      blocks.forEach(b => {
+        const div = document.createElement('div');
+        div.className = 'crop-item';
+        div.innerHTML = (b.crop_image
+          ? `<img src="${b.crop_image}" alt="crop #${b.source_detection_id}">`
+          : `<div style="width:180px;height:40px;background:#eee;line-height:40px;text-align:center;color:#999;">(无图像)</div>`) +
+          `<div class="crop-txt">${(b.text || '').slice(0, 60) || '(空)'}</div>`;
+        cropsGrid.appendChild(div);
+      });
+      if (blocks.length > 0) {
+        document.getElementById('examCropsTitle').textContent = `裁切区域 (${blocks.length} 张)`;
+        document.getElementById('examCropsTitle').style.display = 'block';
+      }
+
+      // OCR results table
+      const ocrTbody = document.getElementById('examOcrTable').querySelector('tbody');
+      ocrTbody.innerHTML = '';
+      blocks.forEach((b, i) => {
+        const row = document.createElement('tr');
+        row.innerHTML = `<td>${i + 1}</td>` +
+          `<td>${b.crop_image ? `<img src="${b.crop_image}" style="max-width:120px;max-height:50px;">` : '-'}</td>` +
+          `<td>${(b.text || '').slice(0, 80)}</td>` +
+          `<td>${b.score.toFixed(3)}</td>` +
+          `<td>${b.is_question ? '是' : ''}</td>`;
+        ocrTbody.appendChild(row);
+      });
+      if (blocks.length > 0) {
+        document.getElementById('examOcrTitle').style.display = 'block';
+        document.getElementById('examOcrTable').style.display = 'table';
+      }
 
       // Stages table
       const stagesTbody = examStagesTable.querySelector('tbody');
