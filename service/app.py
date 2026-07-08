@@ -11,10 +11,40 @@ from fastapi import FastAPI, File, Form, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, Response
 
 from service.config import Config, load_config
+from service.exam import tasks as exam_tasks
+from service.exam.pipeline import run_pipeline
+from service.exam.question_filter import validate_regex
 from service.inference import load_model
 from service.schemas import HealthResponse, PredictResponse
 
 logger = logging.getLogger("doclayout_service")
+
+
+def _validate_exam_params(
+    expand_mode: str,
+    expand_top: float, expand_bottom: float,
+    expand_left: float, expand_right: float,
+    question_regex: str | None,
+) -> str | None:
+    """Return error_code if invalid, else None."""
+    if expand_mode not in ("pixel", "ratio"):
+        return "INVALID_EXPAND_MODE"
+    if expand_mode == "pixel":
+        for name, v in [("expand_top", expand_top), ("expand_bottom", expand_bottom),
+                        ("expand_left", expand_left), ("expand_right", expand_right)]:
+            if v < 0:
+                return f"{name.upper()}_NEGATIVE"
+    else:  # ratio
+        for name, v in [("expand_top", expand_top), ("expand_bottom", expand_bottom),
+                        ("expand_left", expand_left), ("expand_right", expand_right)]:
+            if v < -0.5 or v > 0.5:
+                return f"{name.upper()}_OUT_OF_RANGE"
+    if question_regex is not None:
+        try:
+            validate_regex(question_regex)
+        except ValueError as e:
+            return f"INVALID_REGEX: {e}"
+    return None
 
 
 def create_app() -> FastAPI:
@@ -213,8 +243,139 @@ def create_app() -> FastAPI:
             headers={"Cache-Control": "no-store"},
         )
 
+    @app.post("/predict/exam", responses={
+        413: {"description": "File too large"},
+        415: {"description": "Unsupported media type"},
+        422: {"description": "Validation error"},
+        503: {"description": "Service not ready"},
+    })
+    async def predict_exam(
+        file: UploadFile = File(...),
+        expand_mode: str = Form("pixel"),
+        expand_top: float = Form(20.0),
+        expand_bottom: float = Form(20.0),
+        expand_left: float = Form(20.0),
+        expand_right: float = Form(20.0),
+        question_regex: str | None = Form(None),
+        conf: float = Form(0.3),
+        imgsz: int = Form(1024),
+    ):
+        """Submit a new exam processing task. Returns task_id immediately."""
+        # Convert and validate numeric params
+        try:
+            expand_top_f = float(expand_top)
+            expand_bottom_f = float(expand_bottom)
+            expand_left_f = float(expand_left)
+            expand_right_f = float(expand_right)
+        except (TypeError, ValueError):
+            return JSONResponse(
+                status_code=422,
+                content={"detail": "expand_* must be numeric", "error_code": "INVALID_PARAM"},
+            )
+
+        err = _validate_exam_params(
+            expand_mode, expand_top_f, expand_bottom_f,
+            expand_left_f, expand_right_f, question_regex,
+        )
+        if err:
+            return JSONResponse(status_code=422, content={"detail": err, "error_code": err})
+
+        # MIME check
+        if not (file.content_type or "").startswith("image/"):
+            return JSONResponse(
+                status_code=415,
+                content={"detail": "unsupported media type", "error_code": "BAD_MIME"},
+            )
+
+        raw = await file.read()
+        if len(raw) > cfg.max_file_size_mb * 1024 * 1024:
+            return JSONResponse(
+                status_code=413,
+                content={
+                    "detail": f"file too large, max {cfg.max_file_size_mb}MB",
+                    "error_code": "FILE_TOO_LARGE",
+                },
+            )
+
+        # Submit task
+        task_id = exam_tasks.create_task()
+        params = {
+            "expand_mode": expand_mode,
+            "expand_top": expand_top_f,
+            "expand_bottom": expand_bottom_f,
+            "expand_left": expand_left_f,
+            "expand_right": expand_right_f,
+            "question_regex": question_regex,
+            "conf": conf,
+            "imgsz": imgsz,
+            "device": cfg.device or "cpu",
+        }
+        model = state["model"]
+        sem = state["semaphore"]
+        if model is None:
+            return JSONResponse(
+                status_code=503,
+                content={"detail": "model not ready", "error_code": "NOT_READY"},
+            )
+
+        # Fire-and-forget background task
+        asyncio.create_task(
+            _run_exam_pipeline_async(task_id, raw, params, model, sem)
+        )
+
+        from service.exam.schemas import TaskSubmitResponse
+        return TaskSubmitResponse(
+            task_id=task_id,
+            status="queued",
+            submit_url=f"/predict/exam/{task_id}/status",
+        )
+
+    @app.get("/predict/exam/{task_id}/status")
+    async def exam_status(task_id: str):
+        state_d = exam_tasks.get_task(task_id)
+        if state_d is None:
+            return JSONResponse(
+                status_code=404,
+                content={
+                    "detail": "task not found or expired",
+                    "error_code": "TASK_NOT_FOUND",
+                },
+            )
+        from service.exam.schemas import StageResult, TaskStatusResponse
+        stages = {
+            k: StageResult(
+                started_at=0.0,
+                finished_at=0.0,
+                duration_ms=v.get("duration_ms"),
+                payload=v.get("payload"),
+                error=v.get("error"),
+            )
+            for k, v in state_d["stages"].items()
+        }
+        return TaskStatusResponse(
+            task_id=state_d["task_id"],
+            status=state_d["status"],
+            progress=state_d.get("progress"),
+            stages=stages,
+            final=state_d["final"],
+            error=state_d.get("error"),
+        )
+
     app.state.service_state = state
     return app
+
+
+async def _run_exam_pipeline_async(task_id, image_bytes, params, model, sem):
+    """Run pipeline in background thread (OCR is CPU-bound, blocking)."""
+    import asyncio
+    from functools import partial
+    loop = asyncio.get_event_loop()
+    # run_pipeline signature requires keyword-only model= and semaphore=;
+    # functools.partial binds them so run_in_executor can call positionally.
+    await loop.run_in_executor(
+        None,
+        partial(run_pipeline, task_id, image_bytes, params, model=model, semaphore=sem),
+    )
 
 
 if __name__ == "__main__":
