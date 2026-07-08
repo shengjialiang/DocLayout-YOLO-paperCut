@@ -344,8 +344,6 @@ def create_app() -> FastAPI:
         from service.exam.schemas import StageResult, TaskStatusResponse
         stages = {
             k: StageResult(
-                started_at=0.0,
-                finished_at=0.0,
                 duration_ms=v.get("duration_ms"),
                 payload=v.get("payload"),
                 error=v.get("error"),
