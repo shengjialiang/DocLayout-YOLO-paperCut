@@ -1,9 +1,24 @@
-"""Question number detection via regex."""
+"""Question number detection via regex + OCR confusion normalisation."""
 from __future__ import annotations
 
 import re
 
-DEFAULT_QUESTION_REGEX = r"^\s*\(?\d+[\.\)](?!\d)"
+# Matches: "1.", "1)", "1。", "1、", "(1)", etc.
+DEFAULT_QUESTION_REGEX = r"^\s*\(?\d+[\.。、\)](?!\d)"
+
+# Map of OCR-confused characters that should be '.' in a leading-digit context.
+_QUESTION_PUNCT_NORMALIZE = re.compile(
+    r'^(\s*\(?\d+)[。，、：,;:](?!\d)',
+)
+
+
+def normalize_question_number(text: str) -> str:
+    """Replace OCR-common punctuation errors in leading-digit patterns.
+
+    ``1。`` → ``1.``, ``2，`` → ``2.``, ``3、 `` → ``3.``, etc.
+    Does not touch body text punctuation.
+    """
+    return _QUESTION_PUNCT_NORMALIZE.sub(r'\1.', text)
 
 
 def validate_regex(pattern: str) -> str:

@@ -19,7 +19,7 @@ from service.exam import tasks
 from service.exam.expand import expand_boxes
 from service.exam.geometry import extend_questions
 from service.exam.ocr import OcrEngine, TextBlock
-from service.exam.question_filter import is_question
+from service.exam.question_filter import is_question, normalize_question_number
 from service.exam.schemas import FinalResult, OcrBlock, Question
 
 
@@ -158,7 +158,8 @@ def run_pipeline(
                 if ocr_first_error is None:
                     ocr_first_error = f"per-box OCR failed: {e}"
                 blocks = []
-            full_text = " ".join(b.text for b in blocks) if blocks else ""
+            full_text = normalize_question_number(
+                " ".join(b.text for b in blocks)) if blocks else ""
             avg_score = sum(b.score for b in blocks) / len(blocks) if blocks else 0.0
             crop_b64 = _encode_jpeg_base64(
                 cv2.cvtColor(crop, cv2.COLOR_BGR2RGB))
