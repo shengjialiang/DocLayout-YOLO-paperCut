@@ -134,6 +134,8 @@ def run_pipeline(
     # Stage 3: OCR
     t0 = time.perf_counter()
     ocr_blocks: list[OcrBlock] = []
+    ocr_first_error: str | None = None
+    ocr_failed_count = 0
     try:
         ocr_engine = OcrEngine(lang="ch")
         for box in plain_expanded:
@@ -151,8 +153,9 @@ def run_pipeline(
             try:
                 blocks: list[TextBlock] = ocr_engine.ocr_image(crop)
             except Exception as e:
-                tasks.update_stage(task_id, "ocr", duration_ms=0,
-                                   error=f"per-box OCR failed: {e}")
+                ocr_failed_count += 1
+                if ocr_first_error is None:
+                    ocr_first_error = f"per-box OCR failed: {e}"
                 blocks = []
             full_text = " ".join(b.text for b in blocks) if blocks else ""
             avg_score = sum(b.score for b in blocks) / len(blocks) if blocks else 0.0
@@ -162,9 +165,15 @@ def run_pipeline(
                 text=full_text, score=avg_score,
                 is_question=False,  # set in filter stage
             ))
-        tasks.update_stage(task_id, "ocr",
-                           duration_ms=int((time.perf_counter() - t0) * 1000),
-                           payload={"num_blocks": len(ocr_blocks)})
+        ocr_payload = {"num_blocks": len(ocr_blocks)}
+        if ocr_failed_count:
+            ocr_payload["num_failed"] = ocr_failed_count
+        tasks.update_stage(
+            task_id, "ocr",
+            duration_ms=int((time.perf_counter() - t0) * 1000),
+            payload=ocr_payload,
+            error=ocr_first_error,
+        )
     except Exception as e:
         tasks.update_stage(task_id, "ocr", duration_ms=0, error=str(e))
         ocr_blocks = []

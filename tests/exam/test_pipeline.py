@@ -119,6 +119,45 @@ def test_pipeline_marks_failed_on_fatal_yolo_error(monkeypatch):
     assert "YOLO" in state["error"]
 
 
+def test_pipeline_preserves_per_box_ocr_error(monkeypatch):
+    """If OCR fails on any box, the stage error must be visible in the final
+    status (not silently overwritten by the trailing update_stage call)."""
+    async def fake_predict_one(**kwargs):
+        return {
+            "width": 800, "height": 1000,
+            "annotated_base64": "data:img",
+            "detections": [
+                {"id": 0, "class_id": 0, "class_name": "plain text",
+                 "bbox_xyxy": [50, 100, 750, 200], "bbox_xywh": [400, 150, 700, 100],
+                 "score": 0.9},
+                {"id": 1, "class_id": 0, "class_name": "plain text",
+                 "bbox_xyxy": [50, 300, 750, 400], "bbox_xywh": [400, 350, 700, 100],
+                 "score": 0.9},
+            ],
+            "num_detections": 2,
+            "inference_time_ms": 100,
+            "model_imgsz": 1024, "conf_threshold": 0.3, "device": "cpu",
+        }
+    monkeypatch.setattr("service.inference.predict_one", fake_predict_one)
+
+    class FailingOcr:
+        def ocr_image(self, img):
+            raise RuntimeError("PaddleOCR exploded on this crop")
+    monkeypatch.setattr(pipeline, "OcrEngine", lambda lang="ch": FailingOcr())
+
+    monkeypatch.setattr(pipeline, "redraw_with_questions",
+                        lambda *a, **k: "data:image/jpeg;base64,redrawn")
+    monkeypatch.setattr(pipeline, "_decode_image_bytes",
+                        lambda b: np.zeros((1000, 800, 3), dtype=np.uint8))
+
+    tid = tasks.create_task()
+    pipeline.run_pipeline(tid, b"fake", {}, model=None, semaphore=asyncio.Semaphore(1))
+
+    state = tasks.get_task(tid)
+    assert state["stages"]["ocr"]["error"] is not None
+    assert "PaddleOCR exploded" in state["stages"]["ocr"]["error"]
+
+
 def test_pipeline_zero_questions_still_completes(monkeypatch):
     async def fake_predict_one(**kwargs):
         return {
