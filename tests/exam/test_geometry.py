@@ -10,14 +10,14 @@ def question(text, x1, y1, x2, y2, source_ids=(0,)):
     return {"text": text, "bbox_xyxy": [x1, y1, x2, y2], "source_ids": list(source_ids)}
 
 
-def test_three_questions_extend_to_next_top():
-    """Middle question's bottom = next question's top."""
+def test_middle_question_bottom_equals_next_question_top():
+    """Middle questions extend their bottom to the next question's top."""
     all_boxes = [
         box(0, 0, 100, 50, cls="figure"),       # 0: top
         box(0, 100, 100, 200),                  # 1: question 1 (plain text)
         box(0, 250, 100, 320),                  # 2: question 2
         box(0, 400, 100, 500),                  # 3: question 3
-        box(0, 600, 100, 800, cls="table"),     # 4: tail plain text max-y2
+        box(0, 600, 100, 800),                  # 4: tail plain text (max-y2)
     ]
     qs = [
         question("1.", 0, 100, 100, 180, source_ids=[1]),
@@ -29,11 +29,23 @@ def test_three_questions_extend_to_next_top():
     assert out[0]["bbox_xyxy"] == [0, 100, 100, 250]
     # Q2 bottom = Q3 top = 400
     assert out[1]["bbox_xyxy"] == [0, 250, 100, 400]
-    # Q3 bottom = max(y2) plain text = 800 (table class)
-    # Wait — only plain text class is considered for "last box" per spec
-    # Re-run with table also plain text
-    all_boxes[4] = box(0, 600, 100, 800, cls="plain text")
+
+
+def test_last_question_bottom_uses_max_y2_plain_text():
+    """Last question's bottom equals max(y2) among plain-text boxes."""
+    all_boxes = [
+        box(0, 100, 100, 200),                  # question 1
+        box(0, 250, 100, 320),                  # question 2
+        box(0, 400, 100, 500),                  # question 3
+        box(0, 600, 100, 800),                  # tail plain text (max y2)
+    ]
+    qs = [
+        question("1.", 0, 100, 100, 180, source_ids=[0]),
+        question("2.", 0, 250, 100, 290, source_ids=[1]),
+        question("3.", 0, 400, 100, 480, source_ids=[2]),
+    ]
     out = extend_questions(qs, all_boxes)
+    # Q3 bottom = max(y2) plain text = 800
     assert out[2]["bbox_xyxy"] == [0, 400, 100, 800]
 
 
