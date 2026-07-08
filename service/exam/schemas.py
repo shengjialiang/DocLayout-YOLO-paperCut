@@ -23,6 +23,7 @@ class OcrBlock(BaseModel):
     score: float
     is_question: bool
     crop_image: str = ""   # base64 JPEG of the cropped region
+    block_texts: list[str] = []   # per-block normalized texts (PaddleOCR natural order)
 
 
 class FinalResult(BaseModel):

@@ -234,6 +234,190 @@ def test_pipeline_preserves_per_box_ocr_error(monkeypatch):
     assert "PaddleOCR exploded" in state["stages"]["ocr"]["error"]
 
 
+def test_pipeline_question_number_not_first_ocr_block(monkeypatch):
+    """Regression: PaddleOCR returns blocks top-to-bottom, so a question box
+    whose leftmost (x-wise) text is NOT the topmost can be misclassified.
+    Real example: 第十题.jpg — OCR returns [mx+3y= (top-right), 10.若...
+    (middle-left), 4x+y=9 (bottom-right)]; the question number "10." is at
+    x=34 but the first block in PaddleOCR order is at x=705. Concatenating
+    in natural order yields "mx+3y= 10.若..." which fails `^\\s*\\(?\\d+...`.
+    Pipeline must sort blocks by x before joining so the question number
+    ends up at the start of the joined text.
+    """
+    async def fake_predict_one(**kwargs):
+        return {
+            "width": 2000, "height": 300,
+            "annotated_base64": "data:img",
+            "detections": [
+                {"id": 0, "class_id": 0, "class_name": "plain text",
+                 "bbox_xyxy": [0, 0, 1690, 250], "bbox_xywh": [845, 125, 1690, 250],
+                 "score": 0.9},
+            ],
+            "num_detections": 1,
+            "inference_time_ms": 100,
+            "model_imgsz": 1024,
+            "conf_threshold": 0.3,
+            "device": "cpu",
+        }
+    monkeypatch.setattr("service.inference.predict_one", fake_predict_one)
+
+    class OcrReturnsBlocksInPaddleOrder:
+        def ocr_image(self, img):
+            # Natural PaddleOCR order: top-to-bottom, left-to-right.
+            return [
+                TextBlock(text="mx+3y=",   bbox=[705, 12, 885, 57],  score=0.99),
+                TextBlock(text="10.若关于x,y的二元一次方程组",
+                          bbox=[34, 53, 673, 86], score=0.94),
+                TextBlock(text="4x+y=9",   bbox=[721, 79, 894, 123], score=0.98),
+            ]
+    monkeypatch.setattr(pipeline, "OcrEngine",
+                        lambda lang="ch": OcrReturnsBlocksInPaddleOrder())
+    monkeypatch.setattr(pipeline, "redraw_with_questions",
+                        lambda *a, **k: "data:image/jpeg;base64,redrawn")
+    monkeypatch.setattr(pipeline, "_decode_image_bytes",
+                        lambda b: np.zeros((300, 2000, 3), dtype=np.uint8))
+
+    tid = tasks.create_task()
+    pipeline.run_pipeline(
+        tid, b"fake", {
+            "expand_mode": "pixel",
+            "expand_top": 0, "expand_bottom": 0,
+            "expand_left": 0, "expand_right": 0,
+            "question_regex": r"^\s*\(?\d+[\.。．、\)]",
+        },
+        model=None, semaphore=asyncio.Semaphore(1),
+    )
+
+    state = tasks.get_task(tid)
+    assert state["status"] == "done", state.get("error")
+    assert len(state["final"].questions) == 1, (
+        f"expected the '10.' question box to be detected; "
+        f"questions={state['final'].questions}"
+    )
+    # The question box contains the "10." prefix in at least one OCR block
+    # (per-block check, not dependent on join order).
+    assert any(
+        any(t.startswith("10.") for t in b.block_texts)
+        for b in state["final"].ocr_blocks
+    ), [b.block_texts for b in state["final"].ocr_blocks]
+
+
+def test_pipeline_multiline_question_with_offset_lines(monkeypatch):
+    """Regression: 第十一题.jpg — two text lines where the second line
+    starts a few pixels to the LEFT of the first line (x=32 vs x=34).
+    Under the previous x-sort heuristic this would put the body line ahead
+    of the question number, breaking the ^-anchored prefix check. Per-block
+    `is_question` check is robust to this: any block whose text starts with
+    a question number pattern makes the crop a question box.
+    """
+    async def fake_predict_one(**kwargs):
+        return {
+            "width": 2000, "height": 200,
+            "annotated_base64": "data:img",
+            "detections": [
+                {"id": 0, "class_id": 0, "class_name": "plain text",
+                 "bbox_xyxy": [0, 0, 1810, 162], "bbox_xywh": [905, 81, 1810, 162],
+                 "score": 0.9},
+            ],
+            "num_detections": 1,
+            "inference_time_ms": 100,
+            "model_imgsz": 1024,
+            "conf_threshold": 0.3,
+            "device": "cpu",
+        }
+    monkeypatch.setattr("service.inference.predict_one", fake_predict_one)
+
+    class OcrTwoLinesSecondOffsetLeft:
+        def ocr_image(self, img):
+            # Line 2 starts 2px to the LEFT of line 1 (中文排版常见).
+            return [
+                TextBlock(text="11.如图所示，一个四边形纸片",
+                          bbox=[34, 14, 632, 50], score=0.96),
+                TextBlock(text="在AD边上的B点，AE是折痕",
+                          bbox=[32, 111, 632, 148], score=0.98),
+            ]
+    monkeypatch.setattr(pipeline, "OcrEngine",
+                        lambda lang="ch": OcrTwoLinesSecondOffsetLeft())
+    monkeypatch.setattr(pipeline, "redraw_with_questions",
+                        lambda *a, **k: "data:image/jpeg;base64,redrawn")
+    monkeypatch.setattr(pipeline, "_decode_image_bytes",
+                        lambda b: np.zeros((200, 2000, 3), dtype=np.uint8))
+
+    tid = tasks.create_task()
+    pipeline.run_pipeline(
+        tid, b"fake", {
+            "expand_mode": "pixel",
+            "expand_top": 0, "expand_bottom": 0,
+            "expand_left": 0, "expand_right": 0,
+            "question_regex": r"^\s*\(?\d+[\.。．、\)]",
+        },
+        model=None, semaphore=asyncio.Semaphore(1),
+    )
+
+    state = tasks.get_task(tid)
+    assert state["status"] == "done", state.get("error")
+    assert len(state["final"].questions) == 1, (
+        f"expected the '11.' question box to be detected; "
+        f"questions={state['final'].questions}"
+    )
+    # The matched question box should expose a "11." block in its OCR.
+    assert any(
+        any(t.startswith("11.") for t in b.block_texts)
+        for b in state["final"].ocr_blocks
+    ), [b.block_texts for b in state["final"].ocr_blocks]
+
+
+def test_pipeline_no_question_number_anywhere_is_not_a_question(monkeypatch):
+    """Reverse case: a non-question box may still have several OCR blocks
+    (e.g., a paragraph or caption), but NONE of them starts with a question
+    number pattern. The crop must NOT be marked as a question box."""
+    async def fake_predict_one(**kwargs):
+        return {
+            "width": 600, "height": 200,
+            "annotated_base64": "data:img",
+            "detections": [
+                {"id": 0, "class_id": 0, "class_name": "plain text",
+                 "bbox_xyxy": [0, 0, 600, 200], "bbox_xywh": [300, 100, 600, 200],
+                 "score": 0.9},
+            ],
+            "num_detections": 1,
+            "inference_time_ms": 100,
+            "model_imgsz": 1024,
+            "conf_threshold": 0.3,
+            "device": "cpu",
+        }
+    monkeypatch.setattr("service.inference.predict_one", fake_predict_one)
+
+    class OcrParagraphNoQuestion:
+        def ocr_image(self, img):
+            return [
+                TextBlock(text="本题共10分", bbox=[10, 10, 200, 40], score=0.9),
+                TextBlock(text="解答如下：", bbox=[10, 50, 200, 80], score=0.9),
+            ]
+    monkeypatch.setattr(pipeline, "OcrEngine",
+                        lambda lang="ch": OcrParagraphNoQuestion())
+    monkeypatch.setattr(pipeline, "redraw_with_questions",
+                        lambda *a, **k: "data:image/jpeg;base64,redrawn")
+    monkeypatch.setattr(pipeline, "_decode_image_bytes",
+                        lambda b: np.zeros((200, 600, 3), dtype=np.uint8))
+
+    tid = tasks.create_task()
+    pipeline.run_pipeline(
+        tid, b"fake", {
+            "expand_mode": "pixel",
+            "expand_top": 0, "expand_bottom": 0,
+            "expand_left": 0, "expand_right": 0,
+            "question_regex": r"^\s*\(?\d+[\.。．、\)]",
+        },
+        model=None, semaphore=asyncio.Semaphore(1),
+    )
+
+    state = tasks.get_task(tid)
+    assert state["status"] == "done", state.get("error")
+    assert len(state["final"].questions) == 0
+    assert all(not b.is_question for b in state["final"].ocr_blocks)
+
+
 def test_pipeline_zero_questions_still_completes(monkeypatch):
     async def fake_predict_one(**kwargs):
         return {

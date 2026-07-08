@@ -158,8 +158,8 @@ def run_pipeline(
                 if ocr_first_error is None:
                     ocr_first_error = f"per-box OCR failed: {e}"
                 blocks = []
-            full_text = normalize_question_number(
-                " ".join(b.text for b in blocks)) if blocks else ""
+            block_texts = [normalize_question_number(b.text) for b in blocks]
+            full_text = " ".join(block_texts) if block_texts else ""
             avg_score = sum(b.score for b in blocks) / len(blocks) if blocks else 0.0
             crop_b64 = _encode_jpeg_base64(
                 cv2.cvtColor(crop, cv2.COLOR_BGR2RGB))
@@ -169,6 +169,7 @@ def run_pipeline(
                 text=full_text, score=avg_score,
                 is_question=False,  # set in filter stage
                 crop_image=crop_b64,
+                block_texts=block_texts,
             ))
         ocr_payload = {"num_blocks": len(ocr_blocks)}
         if ocr_failed_count:
@@ -189,7 +190,11 @@ def run_pipeline(
     try:
         questions: list[dict] = []
         for block in ocr_blocks:
-            matched = is_question(block.text, regex)
+            # Per-block check: a crop is a question box if ANY detected text
+            # line starts with a question number pattern. Robust to OCR
+            # block ordering (PaddleOCR returns top-to-bottom, which doesn't
+            # always put the question number first).
+            matched = any(is_question(t, regex) for t in block.block_texts)
             block.is_question = matched
             if matched:
                 questions.append({
