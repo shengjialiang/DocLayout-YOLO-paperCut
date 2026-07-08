@@ -38,3 +38,40 @@ python service/app.py
 | `PORT` | `8000` | 端口 |
 | `MAX_CONCURRENT` | `1` | 推理并发上限 (GPU 建议保持 1) |
 | `MAX_FILE_SIZE_MB` | `20` | 上传文件最大体积 |
+
+## 试卷模式（Exam Mode）
+
+新增 `/predict/exam` 异步端点，专门用于试卷版面识别。
+
+### 用法
+
+```bash
+# 1. 提交任务
+curl -X POST http://localhost:8000/predict/exam \
+  -F "file=@path/to/exam_paper.jpg" \
+  -F "expand_mode=pixel" \
+  -F "expand_top=20" -F "expand_bottom=20" \
+  -F "expand_left=20" -F "expand_right=20" \
+  -F "question_regex=^\s*\(?\d+[\.\)](?!\d)" \
+  -o submit.json
+
+# 2. 轮询状态
+TASK_ID=$(jq -r .task_id submit.json)
+curl http://localhost:8000/predict/exam/$TASK_ID/status > status.json
+```
+
+返回 JSON 包含：
+- `status` — `queued` / `running` / `done` / `failed`
+- `stages` — 5 阶段（yolo/expand/ocr/filter/geometry）耗时与错误
+- `final.questions` — 识别出的题目框（含坐标、文本、置信度）
+- `final.ocr_blocks` — 每个 plain text 框的 OCR 结果
+
+### 安装
+
+```bash
+pip install -e ".[exam]"
+```
+
+### 环境
+
+PaddleOCR 模型在首次 OCR 调用时懒加载（约 150MB 下载）。
