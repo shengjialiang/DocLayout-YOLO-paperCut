@@ -1,4 +1,6 @@
 """OCR engine tests with mocked PaddleOCR (no model download)."""
+import threading
+
 import numpy as np
 import pytest
 
@@ -11,6 +13,14 @@ from service.exam.ocr import (
     ocr_leftmost,
     reset_engine_singleton,
 )
+
+
+@pytest.fixture(autouse=True)
+def _reset_singleton():
+    """Each test starts/ends with no cached engine (avoid state leakage)."""
+    reset_engine_singleton()
+    yield
+    reset_engine_singleton()
 
 
 def test_text_block_dataclass():
@@ -37,7 +47,7 @@ def test_ocr_engine_lazy_load(monkeypatch):
 def test_ocr_engine_loads_on_first_use(monkeypatch):
     loaded = {"called": False}
 
-    def fake_load():
+    def fake_load(lang="ch"):
         loaded["called"] = True
         return "fake-engine"
 
@@ -60,7 +70,7 @@ def test_ocr_engine_caches_engine(monkeypatch):
     """PaddleOCR should only load once per OcrEngine instance."""
     call_count = {"n": 0}
 
-    def fake_load():
+    def fake_load(lang="ch"):
         call_count["n"] += 1
         return "engine"
 
@@ -77,7 +87,7 @@ def test_ocr_engine_caches_engine(monkeypatch):
 
 
 def test_ocr_engine_handles_load_failure(monkeypatch):
-    def fake_load():
+    def fake_load(lang="ch"):
         raise RuntimeError("model not found")
     monkeypatch.setattr("service.exam.ocr._load_paddleocr", fake_load)
     engine = OcrEngine(lang="ch")
@@ -188,7 +198,7 @@ def test_ocr_engine_routes_through_leftmost_for_wide_images(monkeypatch):
         seen_imgs.append(img)
         return [TextBlock(text="1.", bbox=[0, 0, 10, 10], score=0.9)]
 
-    monkeypatch.setattr("service.exam.ocr._load_paddleocr", lambda: "engine")
+    monkeypatch.setattr("service.exam.ocr._load_paddleocr", lambda lang="ch": "engine")
     monkeypatch.setattr("service.exam.ocr._run_ocr", fake_run_ocr)
 
     engine = OcrEngine(lang="ch")

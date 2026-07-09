@@ -150,19 +150,14 @@ def ocr_leftmost(
 
 
 class OcrEngine:
-    """Lazy-loaded PaddleOCR engine.
+    """Thin wrapper that delegates to the process-wide PaddleOCR singleton.
 
-    PaddleOCR models are not loaded at construction time. The first call to
-    `ocr_image` triggers loading. Subsequent calls reuse the loaded engine.
+    Construction is zero-cost: no engine state is held on the instance.
+    Backward-compatible with the original per-instance caching API.
     """
 
     def __init__(self, lang: str = "ch") -> None:
         self._lang = lang
-        self._engine = None
 
     def ocr_image(self, img: np.ndarray) -> list[TextBlock]:
-        if self._engine is None:
-            # Call without args: tests monkeypatch with no-arg fakes; the
-            # production `_load_paddleocr(lang="ch")` has a default value.
-            self._engine = _load_paddleocr()
-        return ocr_leftmost(self._engine, img)
+        return ocr_leftmost(get_engine(self._lang), img)
