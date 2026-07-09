@@ -117,5 +117,7 @@ def _evict_if_needed() -> None:
 
 
 def reset_for_tests() -> None:
-    """Clear all tasks (test helper)."""
+    """Clear all tasks and drop the OCR engine singleton (test helper)."""
     _store.clear()
+    from service.exam.ocr import reset_engine_singleton
+    reset_engine_singleton()
