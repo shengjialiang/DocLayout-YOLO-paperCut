@@ -32,6 +32,6 @@ def load_config() -> Config:
         device=device,
         host=os.environ.get("HOST", "0.0.0.0"),
         port=int(os.environ.get("PORT", "8000")),
-        max_concurrent=int(os.environ.get("MAX_CONCURRENT", "1")),
+        max_concurrent=int(os.environ.get("MAX_CONCURRENT", "2")),
         max_file_size_mb=int(os.environ.get("MAX_FILE_SIZE_MB", "20")),
     )

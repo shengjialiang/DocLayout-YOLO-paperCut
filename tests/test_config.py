@@ -36,7 +36,7 @@ def test_load_config_defaults(monkeypatch, tmp_path):
     assert cfg.device is None  # 表示自动检测
     assert cfg.host == "0.0.0.0"
     assert cfg.port == 8000
-    assert cfg.max_concurrent == 1
+    assert cfg.max_concurrent == 2
     assert cfg.max_file_size_mb == 20
 
 
