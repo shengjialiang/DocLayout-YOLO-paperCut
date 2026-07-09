@@ -7,7 +7,9 @@ Fatal errors (decode failure, YOLO crash) mark the task failed.
 from __future__ import annotations
 
 import base64
+import concurrent.futures
 import io
+import os
 import time
 from typing import Any
 
@@ -21,6 +23,10 @@ from service.exam.geometry import extend_questions
 from service.exam.ocr import OcrEngine, TextBlock
 from service.exam.question_filter import is_question, normalize_question_number
 from service.exam.schemas import FinalResult, OcrBlock, Question
+
+# Default OCR worker count. Tunable via env for fallback to fully-serial
+# behavior on weak hardware (set MAX_OCR_WORKERS=1).
+MAX_OCR_WORKERS = int(os.environ.get("MAX_OCR_WORKERS", "2"))
 
 
 def _decode_image_bytes(image_bytes: bytes) -> np.ndarray:
@@ -47,6 +53,56 @@ def _encode_jpeg_base64(rgb_or_bgr: np.ndarray) -> str:
 
 def _to_rgb(bgr: np.ndarray) -> np.ndarray:
     return cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB) if bgr.ndim == 3 else bgr
+
+
+def _ocr_one_box(args: tuple) -> tuple[OcrBlock, str | None]:
+    """OCR a single cropped plain-text box. Returns (block, error_str).
+
+    Runs in a worker thread; per-box exceptions are caught and surfaced as
+    the second tuple element so the main thread can aggregate them after
+    pool.map returns.
+    """
+    box, img_bgr, w, h = args
+    x1, y1, x2, y2 = [int(round(v)) for v in box["bbox_xyxy"]]
+    x1, y1 = max(0, x1), max(0, y1)
+    x2, y2 = min(w, x2), min(h, y2)
+    if x2 <= x1 or y2 <= y1:
+        return (
+            OcrBlock(
+                source_detection_id=box["id"],
+                bbox_xyxy=box["bbox_xyxy"],
+                text="", score=0.0, is_question=False,
+            ),
+            None,
+        )
+    crop = img_bgr[y1:y2, x1:x2]
+    try:
+        blocks: list[TextBlock] = OcrEngine(lang="ch").ocr_image(crop)
+    except Exception as e:
+        return (
+            OcrBlock(
+                source_detection_id=box["id"],
+                bbox_xyxy=box["bbox_xyxy"],
+                text="", score=0.0, is_question=False,
+            ),
+            f"per-box OCR failed: {e}",
+        )
+    block_texts = [normalize_question_number(b.text) for b in blocks]
+    full_text = " ".join(block_texts) if block_texts else ""
+    avg_score = sum(b.score for b in blocks) / len(blocks) if blocks else 0.0
+    crop_b64 = _encode_jpeg_base64(
+        cv2.cvtColor(crop, cv2.COLOR_BGR2RGB))
+    return (
+        OcrBlock(
+            source_detection_id=box["id"],
+            bbox_xyxy=box["bbox_xyxy"],
+            text=full_text, score=avg_score,
+            is_question=False,  # set in filter stage
+            crop_image=crop_b64,
+            block_texts=block_texts,
+        ),
+        None,
+    )
 
 
 def redraw_with_questions(
@@ -135,51 +191,35 @@ def run_pipeline(
     # Stage 3: OCR
     t0 = time.perf_counter()
     ocr_blocks: list[OcrBlock] = []
-    ocr_first_error: str | None = None
     ocr_failed_count = 0
+    ocr_first_error: str | None = None
     try:
-        ocr_engine = OcrEngine(lang="ch")
-        for box in plain_expanded:
-            x1, y1, x2, y2 = [int(round(v)) for v in box["bbox_xyxy"]]
-            x1, y1 = max(0, x1), max(0, y1)
-            x2, y2 = min(w, x2), min(h, y2)
-            if x2 <= x1 or y2 <= y1:
-                ocr_blocks.append(OcrBlock(
-                    source_detection_id=box["id"],
-                    bbox_xyxy=box["bbox_xyxy"], text="", score=0.0,
-                    is_question=False,
-                ))
-                continue
-            crop = img_bgr[y1:y2, x1:x2]
-            try:
-                blocks: list[TextBlock] = ocr_engine.ocr_image(crop)
-            except Exception as e:
-                ocr_failed_count += 1
-                if ocr_first_error is None:
-                    ocr_first_error = f"per-box OCR failed: {e}"
-                blocks = []
-            block_texts = [normalize_question_number(b.text) for b in blocks]
-            full_text = " ".join(block_texts) if block_texts else ""
-            avg_score = sum(b.score for b in blocks) / len(blocks) if blocks else 0.0
-            crop_b64 = _encode_jpeg_base64(
-                cv2.cvtColor(crop, cv2.COLOR_BGR2RGB))
-            ocr_blocks.append(OcrBlock(
-                source_detection_id=box["id"],
-                bbox_xyxy=box["bbox_xyxy"],
-                text=full_text, score=avg_score,
-                is_question=False,  # set in filter stage
-                crop_image=crop_b64,
-                block_texts=block_texts,
-            ))
-        ocr_payload = {"num_blocks": len(ocr_blocks)}
-        if ocr_failed_count:
-            ocr_payload["num_failed"] = ocr_failed_count
-        tasks.update_stage(
-            task_id, "ocr",
-            duration_ms=int((time.perf_counter() - t0) * 1000),
-            payload=ocr_payload,
-            error=ocr_first_error,
-        )
+        if not plain_expanded:
+            tasks.update_stage(
+                task_id, "ocr",
+                duration_ms=int((time.perf_counter() - t0) * 1000),
+                payload={"num_blocks": 0},
+            )
+        else:
+            args_list = [(box, img_bgr, w, h) for box in plain_expanded]
+            n_workers = max(1, min(MAX_OCR_WORKERS, len(plain_expanded)))
+            with concurrent.futures.ThreadPoolExecutor(max_workers=n_workers) as pool:
+                results: list[tuple[OcrBlock, str | None]] = list(
+                    pool.map(_ocr_one_box, args_list)
+                )
+            ocr_blocks = [r[0] for r in results]
+            errors = [r[1] for r in results if r[1] is not None]
+            ocr_failed_count = len(errors)
+            ocr_first_error = errors[0] if errors else None
+            ocr_payload: dict = {"num_blocks": len(ocr_blocks)}
+            if ocr_failed_count:
+                ocr_payload["num_failed"] = ocr_failed_count
+            tasks.update_stage(
+                task_id, "ocr",
+                duration_ms=int((time.perf_counter() - t0) * 1000),
+                payload=ocr_payload,
+                error=ocr_first_error,
+            )
     except Exception as e:
         tasks.update_stage(task_id, "ocr", duration_ms=0, error=str(e))
         ocr_blocks = []

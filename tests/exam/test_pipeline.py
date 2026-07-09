@@ -1,5 +1,6 @@
 """Pipeline orchestration tests with mocked YOLO + OCR."""
 import asyncio
+import concurrent.futures
 import numpy as np
 import pytest
 
@@ -437,3 +438,108 @@ def test_pipeline_zero_questions_still_completes(monkeypatch):
     state = tasks.get_task(tid)
     assert state["status"] == "done"
     assert state["final"].questions == []
+
+def test_pipeline_ocr_uses_thread_pool(monkeypatch):
+    """Stage 3 OCR must dispatch via concurrent.futures.ThreadPoolExecutor."""
+    import concurrent.futures as cf
+
+    async def fake_predict_one(**kwargs):
+        return {
+            "width": 800, "height": 1000,
+            "annotated_base64": "data:img",
+            "detections": [
+                {"id": 0, "class_id": 0, "class_name": "plain text",
+                 "bbox_xyxy": [50, 100, 750, 200], "bbox_xywh": [400, 150, 700, 100],
+                 "score": 0.9},
+            ],
+            "num_detections": 1, "inference_time_ms": 100,
+            "model_imgsz": 1024, "conf_threshold": 0.3, "device": "cpu",
+        }
+    monkeypatch.setattr("service.inference.predict_one", fake_predict_one)
+    monkeypatch.setattr(pipeline, "_decode_image_bytes",
+                        lambda b: np.zeros((1000, 800, 3), dtype=np.uint8))
+    monkeypatch.setattr(pipeline, "OcrEngine", lambda lang="ch": mock_ocr_empty())
+    monkeypatch.setattr(pipeline, "redraw_with_questions",
+                        lambda *a, **k: "data:image/jpeg;base64,redrawn")
+
+    seen = {"max_workers": None}
+
+    class SpyExecutor:
+        def __init__(self, max_workers):
+            self.max_workers = max_workers
+            seen["max_workers"] = max_workers
+            self._real = cf.ThreadPoolExecutor(max_workers)
+        def __enter__(self):
+            return self._real.__enter__()
+        def __exit__(self, *args):
+            return self._real.__exit__(*args)
+        def map(self, fn, iterable, **kwargs):
+            return self._real.map(fn, iterable, **kwargs)
+
+    monkeypatch.setattr(pipeline.concurrent.futures, "ThreadPoolExecutor", SpyExecutor)
+
+    tid = tasks.create_task()
+    pipeline.run_pipeline(tid, b"fake", {
+        "expand_mode": "pixel", "expand_top": 0, "expand_bottom": 0,
+        "expand_left": 0, "expand_right": 0,
+    }, model=None, semaphore=asyncio.Semaphore(1))
+
+    state = tasks.get_task(tid)
+    assert state["status"] == "done", state.get("error")
+    assert seen["max_workers"] is not None and seen["max_workers"] >= 1
+
+
+def test_pipeline_ocr_block_order_preserved(monkeypatch):
+    """pool.map semantics: ocr_blocks must come out in plain_expanded order
+    even if individual OCR calls complete out of order."""
+    import time
+
+    async def fake_predict_one(**kwargs):
+        return {
+            "width": 1000, "height": 1000,
+            "annotated_base64": "data:img",
+            "detections": [
+                {"id": i, "class_id": 0, "class_name": "plain text",
+                 "bbox_xyxy": [10, 100 + i * 80, 990, 100 + i * 80 + 60],
+                 "bbox_xywh": [500, 130 + i * 80, 980, 60],
+                 "score": 0.9}
+                for i in range(5)
+            ],
+            "num_detections": 5, "inference_time_ms": 100,
+            "model_imgsz": 1024, "conf_threshold": 0.3, "device": "cpu",
+        }
+    monkeypatch.setattr("service.inference.predict_one", fake_predict_one)
+    monkeypatch.setattr(pipeline, "_decode_image_bytes",
+                        lambda b: np.zeros((1000, 1000, 3), dtype=np.uint8))
+    monkeypatch.setattr(pipeline, "redraw_with_questions",
+                        lambda *a, **k: "data:image/jpeg;base64,redrawn")
+
+    class OcrTagsByCallOrder:
+        # Shared counter across instances so we can verify pool.map order
+        # preservation even though OcrEngine() is constructed per-worker.
+        _shared_n = 0
+        def __init__(self):
+            pass
+        def ocr_image(self, img):
+            OcrTagsByCallOrder._shared_n += 1
+            order = OcrTagsByCallOrder._shared_n
+            # Odd calls finish first (would scramble order without pool.map).
+            time.sleep(0.04 if order % 2 == 1 else 0.10)
+            return [TextBlock(text=f"box{order}", bbox=[0, 0, 10, 10], score=0.9)]
+
+    # Reset shared counter (other tests may have bumped it).
+    OcrTagsByCallOrder._shared_n = 0
+
+    monkeypatch.setattr(pipeline, "OcrEngine",
+                        lambda lang="ch": OcrTagsByCallOrder())
+
+    tid = tasks.create_task()
+    pipeline.run_pipeline(tid, b"fake", {
+        "expand_mode": "pixel", "expand_top": 0, "expand_bottom": 0,
+        "expand_left": 0, "expand_right": 0,
+    }, model=None, semaphore=asyncio.Semaphore(1))
+
+    state = tasks.get_task(tid)
+    assert state["status"] == "done", state.get("error")
+    block_texts = [b.block_texts[0] for b in state["final"].ocr_blocks]
+    assert block_texts == ["box1", "box2", "box3", "box4", "box5"], block_texts
