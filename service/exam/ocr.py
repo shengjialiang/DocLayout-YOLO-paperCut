@@ -1,6 +1,7 @@
 """PaddleOCR engine wrapper with lazy loading."""
 from __future__ import annotations
 
+import threading
 from dataclasses import dataclass
 
 import numpy as np
@@ -9,6 +10,28 @@ import numpy as np
 # text lines (returns ~1 block instead of the full text). Empirically
 # determined from real exam crops produced by the YOLO detector.
 MAX_ASPECT_RATIO = 4.0
+
+# Process-wide singleton state. Double-checked locking in get_engine() so
+# first-call concurrent access still triggers exactly one PaddleOCR load.
+_engine_lock = threading.Lock()
+_engine: "object | None" = None
+
+
+def get_engine(lang: str = "ch"):
+    """Return the process-wide singleton PaddleOCR engine (lazy + thread-safe)."""
+    global _engine
+    if _engine is None:
+        with _engine_lock:
+            if _engine is None:
+                _engine = _load_paddleocr(lang=lang)
+    return _engine
+
+
+def reset_engine_singleton() -> None:
+    """Test helper: drop the cached engine so the next get_engine() reloads."""
+    global _engine
+    with _engine_lock:
+        _engine = None
 
 
 @dataclass

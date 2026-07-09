@@ -7,7 +7,9 @@ from service.exam.ocr import (
     TextBlock,
     _leftmost_chunk,
     _split_into_chunks,
+    get_engine,
     ocr_leftmost,
+    reset_engine_singleton,
 )
 
 
@@ -264,3 +266,39 @@ def test_ocr_leftmost_normal_aspect_calls_run_ocr_with_full_image(monkeypatch):
     assert len(seen_imgs) == 1
     np.testing.assert_array_equal(seen_imgs[0], img)
     assert blocks[0].text == "12."
+
+
+def test_get_engine_returns_singleton(monkeypatch):
+    """get_engine() returns the same instance across calls (process-wide cache)."""
+    reset_engine_singleton()
+    monkeypatch.setattr("service.exam.ocr._load_paddleocr", lambda lang="ch": "fake-engine")
+    e1 = get_engine()
+    e2 = get_engine()
+    assert e1 is e2
+    assert e1 == "fake-engine"
+
+
+def test_get_engine_concurrent_init_only_once(monkeypatch):
+    """10 threads racing on first get_engine() must trigger exactly one load."""
+    import threading
+    import time
+
+    reset_engine_singleton()
+    call_count = {"n": 0}
+    load_started = threading.Event()
+
+    def fake_load(lang="ch"):
+        call_count["n"] += 1
+        load_started.set()
+        time.sleep(0.05)  # widen race window
+        return "fake-engine"
+
+    monkeypatch.setattr("service.exam.ocr._load_paddleocr", fake_load)
+
+    threads = [threading.Thread(target=get_engine) for _ in range(10)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert call_count["n"] == 1
+    assert get_engine() == "fake-engine"
