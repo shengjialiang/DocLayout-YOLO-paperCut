@@ -46,3 +46,49 @@ def extend_questions(
             new_box["bbox_xyxy"] = [x1, y1, x2, y2]
         out.append(new_box)
     return out
+
+
+def align_question_right_edges(
+    questions: list[dict],
+    all_boxes: list[dict],
+) -> list[dict]:
+    """Unify every question's right edge to the rightmost plain-text x2.
+
+    Per spec: after all question frames have been determined, every
+    question's right edge (``x2``) is set to the largest ``x2`` among
+    all plain-text-class annotation boxes. Catches cases where some
+    question frames have a shorter right edge than the column they sit
+    in (e.g. OCR-cropped plain-text boxes that don't reach the page
+    margin), so question box outlines line up across the page.
+
+    No-op when there are no plain-text-class boxes or no questions;
+    in that case the input list is returned as-is.
+
+    Args:
+        questions: Each dict has keys ``bbox_xyxy: [x1, y1, x2, y2]``,
+            ``text``, ``source_ids``, ``ocr_score``.
+        all_boxes: All original detections, each with ``class_name`` and
+            ``bbox_xyxy``.
+
+    Returns:
+        New list of dicts with each ``bbox_xyxy[2]`` updated to
+        ``max(plain_text_x2)``. Original input dicts are not mutated;
+        the returned list is the same object only when no alignment
+        was applied.
+    """
+    if not questions:
+        return []
+    plain_x2s = [
+        b["bbox_xyxy"][2] for b in all_boxes
+        if b.get("class_name") == "plain text"
+    ]
+    if not plain_x2s:
+        return questions
+    max_x2 = max(plain_x2s)
+    out = []
+    for q in questions:
+        x1, y1, _, y2 = q["bbox_xyxy"]
+        new_box = dict(q)
+        new_box["bbox_xyxy"] = [x1, y1, max_x2, y2]
+        out.append(new_box)
+    return out

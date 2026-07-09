@@ -19,9 +19,16 @@ from PIL import Image
 
 from service.exam import tasks
 from service.exam.expand import expand_boxes
-from service.exam.geometry import extend_questions
+from service.exam.geometry import (
+    align_question_right_edges,
+    extend_questions,
+)
 from service.exam.ocr import OcrEngine, TextBlock
-from service.exam.question_filter import is_question, normalize_question_number
+from service.exam.question_filter import (
+    filter_questions_by_order,
+    is_question,
+    normalize_question_number,
+)
 from service.exam.schemas import FinalResult, OcrBlock, Question
 
 # Default OCR worker count. Tunable via env for fallback to fully-serial
@@ -174,8 +181,8 @@ def run_pipeline(
         expanded = expand_boxes(
             detections,
             mode=params.get("expand_mode", "pixel"),
-            top=params.get("expand_top", 20),
-            bottom=params.get("expand_bottom", 20),
+            top=params.get("expand_top", 5),
+            bottom=params.get("expand_bottom", 5),
             left=params.get("expand_left", 20),
             right=params.get("expand_right", 20),
             img_width=w, img_height=h,
@@ -226,7 +233,7 @@ def run_pipeline(
 
     # Stage 4: filter
     t0 = time.perf_counter()
-    regex = params.get("question_regex", r"^\s*\(?\d+[\.\)](?!\d)")
+    regex = params.get("question_regex", r"^\s*\d+\.")
     try:
         questions: list[dict] = []
         for block in ocr_blocks:
@@ -243,6 +250,15 @@ def run_pipeline(
                     "source_ids": [block.source_detection_id],
                     "ocr_score": block.score,
                 })
+        # Post-filter: walk question boxes top-to-bottom and drop any whose
+        # leading question number breaks the strictly-increasing order.
+        # Catches OCR misreadings like "0" for "10" or "1" for "11" that
+        # slipped past the regex-based is_question check.
+        question_blocks = [b for b in ocr_blocks if b.is_question]
+        kept = filter_questions_by_order(question_blocks, regex)
+        kept_ids = {b.source_detection_id for b in kept}
+        questions = [q for q in questions
+                     if q["source_ids"][0] in kept_ids]
         tasks.update_stage(task_id, "filter",
                            duration_ms=int((time.perf_counter() - t0) * 1000),
                            payload={"num_questions": len(questions)})
@@ -250,7 +266,26 @@ def run_pipeline(
         tasks.update_stage(task_id, "filter", duration_ms=0, error=str(e))
         questions = []
 
-    # Stage 5: geometry
+    # Stage 5: align — unify every question's right edge to the rightmost
+    # plain-text-box x2 so question frames line up across the column.
+    t0 = time.perf_counter()
+    try:
+        questions = align_question_right_edges(questions, detections)
+        plain_x2s = [
+            b["bbox_xyxy"][2] for b in detections
+            if b.get("class_name") == "plain text"
+        ]
+        max_x2 = max(plain_x2s) if plain_x2s else None
+        tasks.update_stage(
+            task_id, "align",
+            duration_ms=int((time.perf_counter() - t0) * 1000),
+            payload={"max_x2": max_x2, "num_questions": len(questions)},
+        )
+    except Exception as e:
+        tasks.update_stage(task_id, "align", duration_ms=0, error=str(e))
+        # questions unchanged on error
+
+    # Stage 6: geometry
     t0 = time.perf_counter()
     try:
         extended = extend_questions(questions, detections)
@@ -261,7 +296,7 @@ def run_pipeline(
         tasks.update_stage(task_id, "geometry", duration_ms=0, error=str(e))
         extended = questions
 
-    # Stage 6: redraw + final
+    # Stage 7: redraw + final
     try:
         annotated_b64 = redraw_with_questions(img_bgr, extended, detections)
         original_b64 = _encode_jpeg_base64(img_bgr)

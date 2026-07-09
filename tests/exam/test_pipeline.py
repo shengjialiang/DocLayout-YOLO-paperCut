@@ -98,8 +98,8 @@ def test_pipeline_runs_through_all_stages(monkeypatch):
     state = tasks.get_task(tid)
     assert state["status"] == "done"
     assert state["error"] is None
-    # All 5 stages recorded
-    for stage in ("yolo", "expand", "ocr", "filter", "geometry"):
+    # All stages recorded
+    for stage in ("yolo", "expand", "ocr", "filter", "align", "geometry"):
         assert stage in state["stages"], f"stage {stage} missing"
         assert state["stages"][stage]["error"] is None
     # 3 questions found
@@ -543,3 +543,194 @@ def test_pipeline_ocr_block_order_preserved(monkeypatch):
     assert state["status"] == "done", state.get("error")
     block_texts = [b.block_texts[0] for b in state["final"].ocr_blocks]
     assert block_texts == ["box1", "box2", "box3", "box4", "box5"], block_texts
+
+
+def test_pipeline_drops_questions_with_out_of_order_numbers(monkeypatch):
+    """Spec: after is_question, walk top-to-bottom and reclassify boxes
+    whose question numbers don't increase strictly. Here 7/8/9/0/0/1/10
+    → the 0/0/1 boxes are OCR misreadings and must be dropped from the
+    final questions list, with is_question flipped to False."""
+    async def fake_predict_one(**kwargs):
+        return {
+            "width": 1000, "height": 1000,
+            "annotated_base64": "data:img",
+            "detections": [
+                {"id": i, "class_id": 0, "class_name": "plain text",
+                 "bbox_xyxy": [10, 100 + i * 80, 990, 100 + i * 80 + 60],
+                 "bbox_xywh": [500, 130 + i * 80, 980, 60],
+                 "score": 0.9}
+                for i in range(7)
+            ],
+            "num_detections": 7, "inference_time_ms": 100,
+            "model_imgsz": 1024, "conf_threshold": 0.3, "device": "cpu",
+        }
+    monkeypatch.setattr("service.inference.predict_one", fake_predict_one)
+
+    # OCR returns the spec example: 7, 8, 9, 0, 0, 1, 10.
+    # The OcrEngine is constructed per box inside _ocr_one_box, so use a
+    # class-level counter to tag each call's text by its position in the
+    # call sequence (which equals input order under pool.map).
+    texts = ["7. 题目", "8. 题目", "9. 题目",
+             "0. 题目", "0. 题目", "1. 题目", "10. 题目"]
+
+    class OcrByBoxIndex:
+        _shared_n = 0
+        def __init__(self):
+            pass
+        def ocr_image(self, img):
+            i = OcrByBoxIndex._shared_n
+            OcrByBoxIndex._shared_n += 1
+            return [TextBlock(text=texts[i], bbox=[0, 0, 100, 50], score=0.9)]
+
+    OcrByBoxIndex._shared_n = 0
+    monkeypatch.setattr(pipeline, "OcrEngine", lambda lang="ch": OcrByBoxIndex())
+    monkeypatch.setattr(pipeline, "redraw_with_questions",
+                        lambda *a, **k: "data:image/jpeg;base64,redrawn")
+    monkeypatch.setattr(pipeline, "_decode_image_bytes",
+                        lambda b: np.zeros((1000, 1000, 3), dtype=np.uint8))
+
+    tid = tasks.create_task()
+    pipeline.run_pipeline(tid, b"fake", {
+        "expand_mode": "pixel", "expand_top": 0, "expand_bottom": 0,
+        "expand_left": 0, "expand_right": 0,
+    }, model=None, semaphore=asyncio.Semaphore(1))
+
+    state = tasks.get_task(tid)
+    assert state["status"] == "done", state.get("error")
+    # Only 7, 8, 9, 10 survive — the 0/0/1 boxes are reclassified.
+    surviving = [(i, b) for i, b in enumerate(state["final"].ocr_blocks)
+                 if b.is_question]
+    assert len(surviving) == 4, [b.is_question for b in state["final"].ocr_blocks]
+    surviving_texts = [b.block_texts[0] for _, b in surviving]
+    assert surviving_texts == ["7. 题目", "8. 题目", "9. 题目", "10. 题目"]
+    # The questions list (the public output) reflects the reclassification.
+    assert len(state["final"].questions) == 4
+    # Reclassified boxes still appear in ocr_blocks (with is_question=False)
+    # so the front-end can show the user what was filtered out.
+    all_is_question = [b.is_question for b in state["final"].ocr_blocks]
+    assert all_is_question == [True, True, True, False, False, False, True], all_is_question
+
+
+def test_pipeline_aligns_all_questions_to_max_plain_text_x2(monkeypatch):
+    """Each final question's x2 must equal the largest x2 across all
+    plain-text detections. A figure with a wider x2 must be ignored."""
+    async def fake_predict_one(**kwargs):
+        return {
+            "width": 1200, "height": 1500,
+            "annotated_base64": "data:img",
+            "detections": [
+                # figure box whose x2 is huge — must NOT influence the max
+                {"id": 0, "class_id": 1, "class_name": "figure",
+                 "bbox_xyxy": [10, 50, 1190, 1450],
+                 "bbox_xywh": [600, 750, 1180, 1400],
+                 "score": 0.9},
+                # three plain-text question candidates with narrower x2;
+                # the widest plain-text x2 is 700 (third detection's bbox)
+                {"id": 1, "class_id": 0, "class_name": "plain text",
+                 "bbox_xyxy": [20, 100, 500, 180],
+                 "bbox_xywh": [260, 140, 480, 80],
+                 "score": 0.9},
+                {"id": 2, "class_id": 0, "class_name": "plain text",
+                 "bbox_xyxy": [20, 300, 600, 380],
+                 "bbox_xywh": [310, 340, 580, 80],
+                 "score": 0.9},
+                {"id": 3, "class_id": 0, "class_name": "plain text",
+                 "bbox_xyxy": [20, 500, 700, 580],
+                 "bbox_xywh": [360, 540, 680, 80],
+                 "score": 0.9},
+            ],
+            "num_detections": 4, "inference_time_ms": 100,
+            "model_imgsz": 1024, "conf_threshold": 0.3, "device": "cpu",
+        }
+    monkeypatch.setattr("service.inference.predict_one", fake_predict_one)
+
+    class OcrByBoxIndex:
+        _shared_n = 0
+        def __init__(self):
+            pass
+        def ocr_image(self, img):
+            i = OcrByBoxIndex._shared_n
+            OcrByBoxIndex._shared_n += 1
+            # Three 'question' texts matching the three plain-text boxes;
+            # OCR'd in input order (which = pool.map order).
+            texts = ["1. 题目", "2. 题目", "3. 题目"]
+            return [TextBlock(text=texts[i], bbox=[0, 0, 100, 50], score=0.9)]
+    OcrByBoxIndex._shared_n = 0
+    monkeypatch.setattr(pipeline, "OcrEngine", lambda lang="ch": OcrByBoxIndex())
+    monkeypatch.setattr(pipeline, "redraw_with_questions",
+                        lambda *a, **k: "data:image/jpeg;base64,redrawn")
+    monkeypatch.setattr(pipeline, "_decode_image_bytes",
+                        lambda b: np.zeros((1500, 1200, 3), dtype=np.uint8))
+
+    tid = tasks.create_task()
+    pipeline.run_pipeline(tid, b"fake", {
+        "expand_mode": "pixel", "expand_top": 0, "expand_bottom": 0,
+        "expand_left": 0, "expand_right": 0,
+    }, model=None, semaphore=asyncio.Semaphore(1))
+
+    state = tasks.get_task(tid)
+    assert state["status"] == "done", state.get("error")
+
+    # All three questions were detected.
+    assert len(state["final"].questions) == 3
+
+    # Each final question's x2 must equal the max plain-text x2 = 700.
+    # (The 1190 from the figure box must NOT bleed in.)
+    for q in state["final"].questions:
+        assert q.bbox_xyxy[2] == 700, q.bbox_xyxy
+
+    # The "align" stage is recorded with its max_x2 payload.
+    align_stage = state["stages"]["align"]
+    assert align_stage["error"] is None
+    assert align_stage["payload"]["max_x2"] == 700
+    assert align_stage["payload"]["num_questions"] == 3
+
+
+def test_pipeline_align_payload_records_max_x2_unaffected_by_figure(monkeypatch):
+    """If the only 'widest' box is a figure (no plain-text wider), the
+    payload's max_x2 is the max plain-text x2, not anything larger."""
+    async def fake_predict_one(**kwargs):
+        return {
+            "width": 1200, "height": 1500,
+            "annotated_base64": "data:img",
+            "detections": [
+                # one very wide figure
+                {"id": 0, "class_id": 1, "class_name": "figure",
+                 "bbox_xyxy": [10, 50, 1100, 1450],
+                 "bbox_xywh": [555, 750, 1090, 1400],
+                 "score": 0.9},
+                # one narrow plain text that becomes a question
+                {"id": 1, "class_id": 0, "class_name": "plain text",
+                 "bbox_xyxy": [20, 100, 400, 180],
+                 "bbox_xywh": [210, 140, 380, 80],
+                 "score": 0.9},
+            ],
+            "num_detections": 2, "inference_time_ms": 100,
+            "model_imgsz": 1024, "conf_threshold": 0.3, "device": "cpu",
+        }
+    monkeypatch.setattr("service.inference.predict_one", fake_predict_one)
+
+    class OcrSingleText:
+        def __init__(self):
+            pass
+        def ocr_image(self, img):
+            return [TextBlock(text="1. 题目", bbox=[0, 0, 100, 50], score=0.9)]
+    monkeypatch.setattr(pipeline, "OcrEngine", lambda lang="ch": OcrSingleText())
+    monkeypatch.setattr(pipeline, "redraw_with_questions",
+                        lambda *a, **k: "data:image/jpeg;base64,redrawn")
+    monkeypatch.setattr(pipeline, "_decode_image_bytes",
+                        lambda b: np.zeros((1500, 1200, 3), dtype=np.uint8))
+
+    tid = tasks.create_task()
+    pipeline.run_pipeline(tid, b"fake", {
+        "expand_mode": "pixel", "expand_top": 0, "expand_bottom": 0,
+        "expand_left": 0, "expand_right": 0,
+    }, model=None, semaphore=asyncio.Semaphore(1))
+
+    state = tasks.get_task(tid)
+    assert state["status"] == "done", state.get("error")
+    assert state["stages"]["align"]["error"] is None
+    # Figure's 1100 ignored; only plain-text x2 = 400 considered.
+    assert state["stages"]["align"]["payload"]["max_x2"] == 400
+    assert len(state["final"].questions) == 1
+    assert state["final"].questions[0].bbox_xyxy[2] == 400

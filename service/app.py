@@ -252,8 +252,8 @@ def create_app() -> FastAPI:
     async def predict_exam(
         file: UploadFile = File(...),
         expand_mode: str = Form("pixel"),
-        expand_top: float = Form(20.0),
-        expand_bottom: float = Form(20.0),
+        expand_top: float = Form(5.0),
+        expand_bottom: float = Form(5.0),
         expand_left: float = Form(20.0),
         expand_right: float = Form(20.0),
         question_regex: str | None = Form(None),

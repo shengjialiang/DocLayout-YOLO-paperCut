@@ -4,12 +4,22 @@ from __future__ import annotations
 import threading
 from dataclasses import dataclass
 
+import cv2
 import numpy as np
 
 # Above this aspect ratio, PaddleOCR's DB text detector fails to find most
 # text lines (returns ~1 block instead of the full text). Empirically
 # determined from real exam crops produced by the YOLO detector.
 MAX_ASPECT_RATIO = 4.0
+
+# Below this absolute height, PaddleOCR's DB detector returns zero (or
+# garbled) detections even after aspect-ratio chunking — its feature
+# pyramid (stride ~32) collapses to a single row, leaving text instances
+# sub-pixel. White-space padding to this height restores detection on
+# short crops produced by the YOLO detector. Empirically validated on
+# real exam crops where 94-px-tall crops return 0 detections but
+# 128-px-tall (padded) crops correctly detect the question number.
+MIN_OCR_HEIGHT = 128
 
 # Process-wide singleton state. Double-checked locking in get_engine() so
 # first-call concurrent access still triggers exactly one PaddleOCR load.
@@ -48,8 +58,35 @@ def _load_paddleocr(lang: str = "ch"):
     return PaddleOCR(use_angle_cls=False, lang=lang, show_log=False)
 
 
+def _ensure_min_height(img: np.ndarray) -> tuple[np.ndarray, int]:
+    """Pad ``img`` vertically with white space if below MIN_OCR_HEIGHT.
+
+    Returns ``(padded_img, top_pad)``. ``top_pad`` is the number of
+    pixels added above the original image (0 if no padding was needed),
+    so callers can translate bbox y-coordinates back to the original
+    coordinate system.
+    """
+    h = img.shape[0]
+    if h >= MIN_OCR_HEIGHT:
+        return img, 0
+    pad_top = (MIN_OCR_HEIGHT - h) // 2
+    pad_bottom = MIN_OCR_HEIGHT - h - pad_top
+    padded = cv2.copyMakeBorder(
+        img, pad_top, pad_bottom, 0, 0,
+        cv2.BORDER_CONSTANT, value=(255, 255, 255),
+    )
+    return padded, pad_top
+
+
 def _run_ocr(engine, img: np.ndarray) -> list[TextBlock]:
-    """Run PaddleOCR and convert results to TextBlock list."""
+    """Run PaddleOCR and convert results to TextBlock list.
+
+    Pads ``img`` vertically to at least MIN_OCR_HEIGHT before calling
+    PaddleOCR (so very short crops don't collapse the DB feature pyramid),
+    then translates returned bbox y-coords back to the original
+    (unpadded) coordinate system.
+    """
+    img, pad_top = _ensure_min_height(img)
     raw = engine.ocr(img, cls=False)
     blocks: list[TextBlock] = []
     if not raw or not raw[0]:
@@ -63,7 +100,7 @@ def _run_ocr(engine, img: np.ndarray) -> list[TextBlock]:
         xs = [p[0] for p in box_pts]
         ys = [p[1] for p in box_pts]
         x1, x2 = min(xs), max(xs)
-        y1, y2 = min(ys), max(ys)
+        y1, y2 = min(ys) - pad_top, max(ys) - pad_top
         blocks.append(TextBlock(text=text, bbox=[x1, y1, x2, y2], score=score))
     return blocks
 

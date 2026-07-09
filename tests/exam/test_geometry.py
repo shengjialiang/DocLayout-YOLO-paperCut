@@ -1,5 +1,5 @@
 """Question box coordinate extension tests."""
-from service.exam.geometry import extend_questions
+from service.exam.geometry import align_question_right_edges, extend_questions
 
 
 def box(x1, y1, x2, y2, cls="plain text"):
@@ -109,3 +109,125 @@ def test_no_plain_text_returns_questions_unchanged_for_last():
     out = extend_questions(qs, all_boxes)
     # No plain text at all; last question's bottom = original 180
     assert out[0]["bbox_xyxy"] == [0, 100, 100, 180]
+
+
+# --- align_question_right_edges ---
+
+
+def test_align_empty_questions_returns_empty():
+    """No questions → no-op, return empty list."""
+    out = align_question_right_edges([], [box(0, 0, 100, 50)])
+    assert out == []
+
+
+def test_align_no_plain_text_returns_questions_unchanged():
+    """If no plain-text boxes exist, the input list is returned unchanged."""
+    all_boxes = [
+        box(0, 100, 100, 200, cls="figure"),
+        box(0, 250, 100, 320, cls="table"),
+    ]
+    qs = [question("1.", 0, 100, 80, 180, source_ids=[0])]
+    out = align_question_right_edges(qs, all_boxes)
+    assert out is qs  # same list returned unchanged
+    assert out[0]["bbox_xyxy"] == [0, 100, 80, 180]
+
+
+def test_align_basic_sets_all_question_x2_to_max_plain_text():
+    """All questions' x2 are unified to max(x2) of plain-text boxes."""
+    all_boxes = [
+        box(10, 100, 350, 200),  # q1 (x2 = 350)
+        box(10, 250, 350, 320),  # q2
+        box(10, 400, 350, 500),  # q3
+        box(10, 600, 800, 800),  # tail plain text with widest x2
+    ]
+    qs = [
+        question("1.", 10, 100, 350, 180, source_ids=[0]),
+        question("2.", 10, 250, 350, 290, source_ids=[1]),
+        question("3.", 10, 400, 350, 480, source_ids=[2]),
+    ]
+    out = align_question_right_edges(qs, all_boxes)
+    assert all(q["bbox_xyxy"][2] == 800 for q in out)
+
+
+def test_align_ignores_non_plain_text_classes():
+    """figure / table x2 values must NOT influence the max."""
+    all_boxes = [
+        box(10, 100, 350, 200),                  # plain text q1
+        box(10, 250, 350, 320),                  # plain text q2
+        box(10, 400, 350, 500),                  # plain text q3
+        box(10, 0, 9999, 50, cls="figure"),      # figure with huge x2 — ignored
+        box(10, 600, 800, 800),                  # plain text (max plain x2 = 800)
+    ]
+    qs = [
+        question("1.", 10, 100, 350, 180, source_ids=[0]),
+        question("2.", 10, 250, 350, 290, source_ids=[1]),
+        question("3.", 10, 400, 350, 480, source_ids=[2]),
+    ]
+    out = align_question_right_edges(qs, all_boxes)
+    assert all(q["bbox_xyxy"][2] == 800 for q in out)
+    assert out[0]["bbox_xyxy"][2] == 800
+
+
+def test_align_uses_max_across_multiple_plain_text_boxes():
+    """The maximum x2 across ALL plain-text boxes is used, not the last."""
+    all_boxes = [
+        box(10, 100, 400, 200),  # x2 = 400
+        box(10, 250, 350, 320),  # x2 = 350
+        box(10, 400, 800, 500),  # x2 = 800 (max)
+        box(10, 600, 500, 800),  # x2 = 500
+    ]
+    qs = [
+        question("1.", 10, 100, 350, 180, source_ids=[0]),
+        question("2.", 10, 250, 400, 290, source_ids=[1]),
+    ]
+    out = align_question_right_edges(qs, all_boxes)
+    assert out[0]["bbox_xyxy"] == [10, 100, 800, 180]
+    assert out[1]["bbox_xyxy"] == [10, 250, 800, 290]
+
+
+def test_align_preserves_y1_and_y2():
+    """Vertical coordinates (y1, y2) and x1 must be preserved."""
+    all_boxes = [box(10, 100, 800, 200)]
+    qs = [question("1.", 50, 120, 200, 180, source_ids=[0])]
+    out = align_question_right_edges(qs, all_boxes)
+    assert out[0]["bbox_xyxy"] == [50, 120, 800, 180]
+
+
+def test_align_does_not_mutate_input_question_dict():
+    """The function must return NEW dicts, never mutate input."""
+    all_boxes = [box(10, 100, 800, 200)]
+    q_in = question("1.", 10, 100, 350, 180, source_ids=[0])
+    original_bbox = list(q_in["bbox_xyxy"])
+    out = align_question_right_edges([q_in], all_boxes)
+    assert q_in["bbox_xyxy"] == original_bbox
+    assert out[0] is not q_in
+    assert out[0]["bbox_xyxy"] != q_in["bbox_xyxy"]
+    assert out[0]["bbox_xyxy"][2] == 800
+
+
+def test_align_preserves_other_question_fields():
+    """Other fields (text, source_ids, ocr_score) must survive the transform."""
+    all_boxes = [box(10, 100, 800, 200)]
+    q_in = {
+        "text": "1. (计算题)", "bbox_xyxy": [10, 100, 350, 180],
+        "source_ids": [42], "ocr_score": 0.93,
+    }
+    out = align_question_right_edges([q_in], all_boxes)
+    assert out[0]["text"] == "1. (计算题)"
+    assert out[0]["source_ids"] == [42]
+    assert out[0]["ocr_score"] == 0.93
+
+
+def test_align_single_question_single_plain_text_box():
+    all_boxes = [box(0, 100, 600, 200)]
+    qs = [question("1.", 0, 100, 200, 180, source_ids=[0])]
+    out = align_question_right_edges(qs, all_boxes)
+    assert out[0]["bbox_xyxy"] == [0, 100, 600, 180]
+
+
+def test_align_empty_all_boxes_returns_questions_unchanged():
+    """Empty detection list → no plain text → no-op."""
+    qs = [question("1.", 0, 100, 200, 180, source_ids=[0])]
+    out = align_question_right_edges(qs, [])
+    assert out is qs
+    assert out[0]["bbox_xyxy"] == [0, 100, 200, 180]
