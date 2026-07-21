@@ -292,6 +292,35 @@ def create_app() -> FastAPI:
             },
         )
 
+    @app.get("/predict/exam/enhance/{task_id}/status")
+    async def enhance_status(task_id: str):
+        state_d = exam_tasks.get_task(task_id)
+        if state_d is None:
+            return JSONResponse(
+                status_code=404,
+                content={
+                    "detail": "task not found or expired",
+                    "error_code": "TASK_NOT_FOUND",
+                },
+            )
+        from service.exam.schemas import EnhancementStatusResponse, StageResult
+        stages = {
+            k: StageResult(
+                duration_ms=v.get("duration_ms"),
+                payload=v.get("payload"),
+                error=v.get("error"),
+            )
+            for k, v in state_d["stages"].items()
+        }
+        return EnhancementStatusResponse(
+            task_id=state_d["task_id"],
+            status=state_d["status"],
+            progress=state_d.get("progress"),
+            stages=stages,
+            final=state_d.get("final"),
+            error=state_d.get("error"),
+        )
+
     @app.post("/predict/exam", responses={
         413: {"description": "File too large"},
         415: {"description": "Unsupported media type"},
