@@ -12,6 +12,7 @@ class Config:
     port: int
     max_concurrent: int
     max_file_size_mb: int
+    docrect_model_path: str | None  # None = dewarping stage skipped
 
 
 def load_config() -> Config:
@@ -27,6 +28,19 @@ def load_config() -> Config:
 
     device = os.environ.get("DEVICE") or None  # empty string -> None
 
+    raw_docrect = os.environ.get("DOCRECT_MODEL_PATH")
+    docrect_path: str | None = None
+    if raw_docrect:
+        docrect_path = raw_docrect
+        if not Path(docrect_path).is_file():
+            # Surface as None but warn so startup logs explain the skip.
+            import logging
+            logging.getLogger("doclayout_service").warning(
+                "[WARN] DOCRECT_MODEL_PATH=%s does not exist; dewarping stage will be skipped.",
+                docrect_path,
+            )
+            docrect_path = None
+
     return Config(
         model_path=model_path,
         device=device,
@@ -34,4 +48,5 @@ def load_config() -> Config:
         port=int(os.environ.get("PORT", "8000")),
         max_concurrent=int(os.environ.get("MAX_CONCURRENT", "2")),
         max_file_size_mb=int(os.environ.get("MAX_FILE_SIZE_MB", "20")),
+        docrect_model_path=docrect_path,
     )

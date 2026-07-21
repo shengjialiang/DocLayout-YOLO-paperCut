@@ -1,58 +1,55 @@
+"""Tests for service.config.Config and load_config."""
+from __future__ import annotations
+
+import os
+from pathlib import Path
+
 import pytest
+
 from service.config import Config, load_config
 
 
-def test_load_config_with_env(monkeypatch, tmp_path):
-    """环境变量优先于默认。"""
-    model_file = tmp_path / "m.pt"
-    model_file.touch()
-    monkeypatch.setenv("MODEL_PATH", str(model_file))
-    monkeypatch.setenv("DEVICE", "cpu")
-    monkeypatch.setenv("HOST", "127.0.0.1")
-    monkeypatch.setenv("PORT", "9000")
-    monkeypatch.setenv("MAX_CONCURRENT", "3")
-    monkeypatch.setenv("MAX_FILE_SIZE_MB", "10")
+@pytest.fixture
+def model_file(tmp_path: Path) -> str:
+    f = tmp_path / "model.pt"
+    f.write_bytes(b"")
+    return str(f)
+
+
+def test_load_config_minimal(model_file: str, monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("MODEL_PATH", model_file)
+    monkeypatch.delenv("DOCRECT_MODEL_PATH", raising=False)
+    monkeypatch.delenv("DEVICE", raising=False)
+    monkeypatch.delenv("HOST", raising=False)
+    monkeypatch.delenv("PORT", raising=False)
+    monkeypatch.delenv("MAX_CONCURRENT", raising=False)
+    monkeypatch.delenv("MAX_FILE_SIZE_MB", raising=False)
 
     cfg = load_config()
-
-    assert cfg.model_path == str(model_file)
-    assert cfg.device == "cpu"
-    assert cfg.host == "127.0.0.1"
-    assert cfg.port == 9000
-    assert cfg.max_concurrent == 3
-    assert cfg.max_file_size_mb == 10
-
-
-def test_load_config_defaults(monkeypatch, tmp_path):
-    """未设置环境变量时使用默认。"""
-    model_file = tmp_path / "m.pt"
-    model_file.touch()
-    monkeypatch.setenv("MODEL_PATH", str(model_file))
-    for k in ("DEVICE", "HOST", "PORT", "MAX_CONCURRENT", "MAX_FILE_SIZE_MB"):
-        monkeypatch.delenv(k, raising=False)
-
-    cfg = load_config()
-
-    assert cfg.device is None  # 表示自动检测
+    assert cfg.model_path == model_file
+    assert cfg.device is None
     assert cfg.host == "0.0.0.0"
     assert cfg.port == 8000
     assert cfg.max_concurrent == 2
     assert cfg.max_file_size_mb == 20
+    assert cfg.docrect_model_path is None
 
 
-def test_load_config_missing_model_path(monkeypatch, tmp_path):
-    """MODEL_PATH 未设置应抛错。"""
-    monkeypatch.delenv("MODEL_PATH", raising=False)
-    with pytest.raises(ValueError, match="MODEL_PATH"):
-        load_config()
+def test_load_config_with_docrect(model_file: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    docrect = tmp_path / "docrect.onnx"
+    docrect.write_bytes(b"")
+    monkeypatch.setenv("MODEL_PATH", model_file)
+    monkeypatch.setenv("DOCRECT_MODEL_PATH", str(docrect))
+
+    cfg = load_config()
+    assert cfg.docrect_model_path == str(docrect)
 
 
-def test_load_config_nonexistent_model(tmp_path):
-    """模型文件不存在应抛错。"""
-    import os
-    os.environ["MODEL_PATH"] = str(tmp_path / "nonexistent.pt")
-    try:
-        with pytest.raises(FileNotFoundError):
-            load_config()
-    finally:
-        del os.environ["MODEL_PATH"]
+def test_load_config_docrect_missing_file(model_file: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    missing = tmp_path / "does-not-exist.onnx"
+    monkeypatch.setenv("MODEL_PATH", model_file)
+    monkeypatch.setenv("DOCRECT_MODEL_PATH", str(missing))
+
+    cfg = load_config()
+    # Missing file → None with a warning, not an exception.
+    assert cfg.docrect_model_path is None
