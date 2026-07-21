@@ -159,6 +159,7 @@ def _stage_deskew(img_bgr: np.ndarray) -> StageResult:
         return StageResult(
             image=img_bgr, applied=False,
             duration_ms=int((time.perf_counter() - t0) * 1000),
+            error="NO_QUAD_FOUND",
         )
 
     angle = float(np.median(angles))
@@ -167,6 +168,7 @@ def _stage_deskew(img_bgr: np.ndarray) -> StageResult:
         return StageResult(
             image=img_bgr, applied=False,
             duration_ms=int((time.perf_counter() - t0) * 1000),
+            error="ANGLE_OUT_OF_RANGE",
             payload={"estimated_angle_deg": angle, "skipped_reason": "ANGLE_OUT_OF_RANGE"},
         )
 
