@@ -130,3 +130,51 @@ def _stage_edge_crop(img_bgr: np.ndarray) -> StageResult:
         duration_ms=int((time.perf_counter() - t0) * 1000),
         payload={"out_size": {"width": out_w, "height": out_h}},
     )
+
+
+_MAX_DESKEW_DEG = 15.0
+
+
+def _stage_deskew(img_bgr: np.ndarray) -> StageResult:
+    """Detect dominant text-block rotation and rotate the image to upright.
+
+    Skips when estimated angle exceeds ±15° (degenerate or non-document image).
+    """
+    import time
+    t0 = time.perf_counter()
+    gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
+    _, binary = cv2.threshold(gray, 200, 255, cv2.THRESH_BINARY)
+    contours, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    angles: list[float] = []
+    for c in contours:
+        if cv2.contourArea(c) < 50000:
+            continue
+        _, _, ang = cv2.minAreaRect(c)
+        if ang < -45:
+            ang += 90
+        elif ang > 45:
+            ang -= 90
+        angles.append(ang)
+    if not angles:
+        return StageResult(
+            image=img_bgr, applied=False,
+            duration_ms=int((time.perf_counter() - t0) * 1000),
+        )
+
+    angle = float(np.median(angles))
+    # OpenCV positive angle = counter-clockwise. To correct, rotate by -angle.
+    if abs(angle) > _MAX_DESKEW_DEG:
+        return StageResult(
+            image=img_bgr, applied=False,
+            duration_ms=int((time.perf_counter() - t0) * 1000),
+            payload={"estimated_angle_deg": angle, "skipped_reason": "ANGLE_OUT_OF_RANGE"},
+        )
+
+    h, w = img_bgr.shape[:2]
+    M = cv2.getRotationMatrix2D((w / 2, h / 2), angle, 1.0)
+    rotated = cv2.warpAffine(img_bgr, M, (w, h), borderValue=(255, 255, 255))
+    return StageResult(
+        image=rotated, applied=True,
+        duration_ms=int((time.perf_counter() - t0) * 1000),
+        payload={"rotated_deg": angle},
+    )

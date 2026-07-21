@@ -10,6 +10,7 @@ import pytest
 from service.exam.enhance import (
     _decode_image_bytes,
     _encode_jpeg_base64,
+    _stage_deskew,
     _stage_edge_crop,
 )
 
@@ -88,4 +89,50 @@ def test_edge_crop_skips_when_result_too_small():
     result = _stage_edge_crop(img)
     # Either applied=False or applied=True with reasonable size; here expect skip
     # because the quad cannot yield a perspective warp meeting the size threshold.
+    assert result.applied is False
+
+
+def _rotate_image(img: np.ndarray, angle_deg: float) -> np.ndarray:
+    h, w = img.shape[:2]
+    M = cv2.getRotationMatrix2D((w / 2, h / 2), angle_deg, 1.0)
+    return cv2.warpAffine(img, M, (w, h), borderValue=(255, 255, 255))
+
+
+def _estimate_skew_angle_deg(img_bgr: np.ndarray) -> float:
+    """Return the dominant text-block angle in degrees (positive = CCW)."""
+    gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
+    _, binary = cv2.threshold(gray, 200, 255, cv2.THRESH_BINARY)
+    contours, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    angles = []
+    for c in contours:
+        if cv2.contourArea(c) < 50000:
+            continue
+        _, _, ang = cv2.minAreaRect(c)
+        # OpenCV minAreaRect angle: between -90 and 0. Normalize to ±45.
+        if ang < -45:
+            ang += 90
+        elif ang > 45:
+            ang -= 90
+        angles.append(ang)
+    if not angles:
+        return 0.0
+    # Use median to be robust to outliers.
+    return float(np.median(angles))
+
+
+def test_deskew_corrects_small_rotation():
+    base = _make_quad_test_image()
+    rotated = _rotate_image(base, 5.0)
+    pre_angle = abs(_estimate_skew_angle_deg(rotated))
+    assert pre_angle > 1.0, "test sanity: rotated image must report a non-trivial skew"
+    result = _stage_deskew(rotated)
+    assert result.applied is True
+    post_angle = abs(_estimate_skew_angle_deg(result.image))
+    assert post_angle < 1.5, f"residual skew {post_angle} should be < 1.5°"
+
+
+def test_deskew_skips_extreme_angle():
+    base = _make_quad_test_image()
+    rotated = _rotate_image(base, 25.0)
+    result = _stage_deskew(rotated)
     assert result.applied is False
