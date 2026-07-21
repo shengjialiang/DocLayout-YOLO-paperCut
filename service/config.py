@@ -12,7 +12,7 @@ class Config:
     port: int
     max_concurrent: int
     max_file_size_mb: int
-    docrect_model_path: str | None  # None = dewarping stage skipped
+    docrect_model_path: str | None = None  # None = dewarping stage skipped
 
 
 def load_config() -> Config:
