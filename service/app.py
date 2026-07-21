@@ -243,6 +243,55 @@ def create_app() -> FastAPI:
             headers={"Cache-Control": "no-store"},
         )
 
+    @app.post("/predict/exam/enhance", responses={
+        413: {"description": "File too large"},
+        415: {"description": "Unsupported media type"},
+        503: {"description": "Service not ready"},
+    })
+    async def enhance_submit(
+        file: UploadFile = File(...),
+        enable_deskew: bool = Form(True),
+        enable_dewarp: bool = Form(True),
+        enable_clahe: bool = Form(True),
+    ):
+        """Submit a new image-enhancement task. Returns task_id immediately."""
+        if not (file.content_type or "").startswith("image/"):
+            return JSONResponse(
+                status_code=415,
+                content={"detail": "unsupported media type", "error_code": "BAD_MIME"},
+            )
+
+        raw = await file.read()
+        if len(raw) > cfg.max_file_size_mb * 1024 * 1024:
+            return JSONResponse(
+                status_code=413,
+                content={
+                    "detail": f"file too large, max {cfg.max_file_size_mb}MB",
+                    "error_code": "FILE_TOO_LARGE",
+                },
+            )
+
+        task_id = exam_tasks.create_task()
+        params = {
+            "docrect_model_path": cfg.docrect_model_path,
+            "enable_deskew": bool(enable_deskew),
+            "enable_dewarp": bool(enable_dewarp),
+            "enable_clahe": bool(enable_clahe),
+        }
+
+        asyncio.create_task(
+            _run_enhance_pipeline_async(task_id, raw, params)
+        )
+
+        return JSONResponse(
+            status_code=202,
+            content={
+                "task_id": task_id,
+                "status": "queued",
+                "submit_url": f"/predict/exam/enhance/{task_id}/status",
+            },
+        )
+
     @app.post("/predict/exam", responses={
         413: {"description": "File too large"},
         415: {"description": "Unsupported media type"},
@@ -387,6 +436,18 @@ async def _run_exam_pipeline_async(task_id, image_bytes, params, model, sem):
     await loop.run_in_executor(
         None,
         partial(run_pipeline, task_id, image_bytes, params, model=model, semaphore=sem),
+    )
+
+
+async def _run_enhance_pipeline_async(task_id, image_bytes, params):
+    """Run enhancement in a background thread (CPU-bound OpenCV/DocRect work)."""
+    import asyncio
+    from functools import partial
+    from service.exam.enhance import run_enhance_pipeline
+    loop = asyncio.get_event_loop()
+    await loop.run_in_executor(
+        None,
+        partial(run_enhance_pipeline, task_id, image_bytes, params),
     )
 
 
