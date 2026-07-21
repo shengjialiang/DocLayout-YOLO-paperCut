@@ -260,3 +260,76 @@ def test_run_enhance_pipeline_all_stages_skip_keeps_original(monkeypatch: pytest
     assert isinstance(final, EnhancementFinal)
     assert final.applied_stages == []
     assert final.original_image == final.enhanced_image
+
+
+# --- DocRect integration tests ---
+
+def test_apply_docrect_prefers_onnx(monkeypatch: pytest.MonkeyPatch, tmp_path):
+    """When ONNX file is provided, _load_docrect_session returns an onnxruntime InferenceSession."""
+    fake_onnx = tmp_path / "docrect.onnx"
+    fake_onnx.write_bytes(b"")
+
+    monkeypatch.setattr("service.exam.enhance._HAS_ONNX", True)
+
+    called = {"ort": False, "torch": False}
+
+    class FakeSession:
+        def __init__(self, path):
+            assert str(path) == str(fake_onnx)
+
+    def fake_ort_load(path):
+        called["ort"] = True
+        return FakeSession(path)
+
+    monkeypatch.setattr(
+        "service.exam.enhance._load_onnx_session", fake_ort_load
+    )
+    monkeypatch.setattr(
+        "service.exam.enhance._load_torch_session",
+        lambda path: called.__setitem__("torch", True) or None,
+    )
+
+    from service.exam.enhance import _load_docrect_session
+    sess = _load_docrect_session(str(fake_onnx))
+    assert called["ort"] is True
+    assert called["torch"] is False
+
+
+def test_apply_docrect_falls_back_to_torch(monkeypatch: pytest.MonkeyPatch, tmp_path):
+    """When ONNX is unavailable or missing, falls back to PyTorch .pth."""
+    fake_pth = tmp_path / "docrect.pth"
+    fake_pth.write_bytes(b"")
+
+    monkeypatch.setattr("service.exam.enhance._HAS_ONNX", False)
+    called = {"torch": False}
+
+    def fake_torch_load(path):
+        called["torch"] = True
+        assert str(path) == str(fake_pth)
+        return "torch-model-stub"
+
+    monkeypatch.setattr(
+        "service.exam.enhance._load_torch_session", fake_torch_load
+    )
+
+    from service.exam.enhance import _load_docrect_session
+    sess = _load_docrect_session(str(fake_pth))
+    assert called["torch"] is True
+    assert sess == "torch-model-stub"
+
+
+def test_apply_docrect_raises_when_no_backend(monkeypatch: pytest.MonkeyPatch, tmp_path):
+    fake = tmp_path / "docrect.onnx"
+    fake.write_bytes(b"")
+    monkeypatch.setattr("service.exam.enhance._HAS_ONNX", False)
+
+    # Make torch load raise to simulate unavailable backend.
+    def raise_load(path):
+        raise RuntimeError("torch not installed")
+
+    monkeypatch.setattr("service.exam.enhance._load_torch_session", raise_load)
+
+    from service.exam.enhance import _load_docrect_session
+    import pytest
+    with pytest.raises(RuntimeError, match="torch not installed"):
+        _load_docrect_session(str(fake))
