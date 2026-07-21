@@ -180,3 +180,35 @@ def _stage_deskew(img_bgr: np.ndarray) -> StageResult:
         duration_ms=int((time.perf_counter() - t0) * 1000),
         payload={"rotated_deg": angle},
     )
+
+
+def _stage_clahe_enhance(img_bgr: np.ndarray) -> StageResult:
+    """Apply mild CLAHE on the L channel + bilateral denoise + light unsharp mask.
+
+    Always succeeds on a valid BGR image; failure returns applied=False.
+    """
+    import time
+    t0 = time.perf_counter()
+    try:
+        # Bilateral denoise first (preserves edges while smoothing paper texture).
+        denoised = cv2.bilateralFilter(img_bgr, d=5, sigmaColor=20, sigmaSpace=20)
+        # CLAHE on L channel in LAB space.
+        lab = cv2.cvtColor(denoised, cv2.COLOR_BGR2LAB)
+        l, a, b = cv2.split(lab)
+        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+        l2 = clahe.apply(l)
+        lab2 = cv2.merge([l2, a, b])
+        out = cv2.cvtColor(lab2, cv2.COLOR_LAB2BGR)
+        # Light unsharp mask for text legibility.
+        blurred = cv2.GaussianBlur(out, (0, 0), sigmaX=1.0)
+        out = cv2.addWeighted(out, 1.2, blurred, -0.2, 0)
+    except cv2.error as e:
+        return StageResult(
+            image=img_bgr, applied=False,
+            duration_ms=int((time.perf_counter() - t0) * 1000),
+            error=f"CLAHE_FAILED: {e}",
+        )
+    return StageResult(
+        image=out, applied=True,
+        duration_ms=int((time.perf_counter() - t0) * 1000),
+    )

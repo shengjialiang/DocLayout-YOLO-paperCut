@@ -10,6 +10,7 @@ import pytest
 from service.exam.enhance import (
     _decode_image_bytes,
     _encode_jpeg_base64,
+    _stage_clahe_enhance,
     _stage_deskew,
     _stage_edge_crop,
 )
@@ -136,3 +137,30 @@ def test_deskew_skips_extreme_angle():
     rotated = _rotate_image(base, 25.0)
     result = _stage_deskew(rotated)
     assert result.applied is False
+
+
+def test_clahe_preserves_shape_and_dtype():
+    img = _make_quad_test_image()
+    result = _stage_clahe_enhance(img)
+    assert result.applied is True
+    assert result.image.shape == img.shape
+    assert result.image.dtype == img.dtype
+
+
+def test_clahe_increases_luminance_diversity():
+    # Low-contrast image: CLAHE should pull histogram apart.
+    img = np.full((200, 300, 3), 128, dtype=np.uint8)
+    # Add a few subtle gray patches to give CLAHE something to work with.
+    cv2.rectangle(img, (50, 50), (120, 120), (110, 110, 110), -1)
+    cv2.rectangle(img, (180, 80), (240, 160), (140, 140, 140), -1)
+
+    pre_gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    pre_std = float(pre_gray.std())
+
+    result = _stage_clahe_enhance(img)
+    post_gray = cv2.cvtColor(result.image, cv2.COLOR_BGR2GRAY)
+    post_std = float(post_gray.std())
+
+    assert post_std >= pre_std, (
+        f"CLAHE should preserve or increase contrast (pre={pre_std:.2f}, post={post_std:.2f})"
+    )
