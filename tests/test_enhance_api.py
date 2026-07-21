@@ -25,11 +25,12 @@ def client(monkeypatch: pytest.MonkeyPatch, tmp_path):
     monkeypatch.setenv("MODEL_PATH", str(model_pt))
     monkeypatch.delenv("DOCRECT_MODEL_PATH", raising=False)
 
-    # Prevent the real YOLO from loading during app construction.
-    monkeypatch.setattr(
-        "service.inference.load_model",
-        lambda *a, **kw: object(),
-    )
+    # Prevent the real YOLO from loading during app construction. Patch BOTH
+    # the original module and the symbol already bound into service.app, since
+    # service.app does `from service.inference import load_model` at import time.
+    fake_loader = lambda *a, **kw: object()
+    monkeypatch.setattr("service.inference.load_model", fake_loader)
+    monkeypatch.setattr("service.app.load_model", fake_loader)
 
     from service.app import create_app
     app = create_app()
