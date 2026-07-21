@@ -148,6 +148,25 @@ python format_docsynth300k.py
 **注意:** 由于YOLO代码库数据加载存在内存泄漏问题，大数据集训练有可能会出现不明原因中断，可以通过 ```--pretrain 上一个检查点.pt --resume``` 来接续预训练
 
 
+## 可选:试卷图片增强(dewarping)
+
+服务可选启用 5 阶段图片增强流水线(切边 → deskew → DocRect 去弯 → CLAHE),在「试卷识别」页面「开始识别」前可点「增强图片」预览效果。
+
+启用方式:
+- 下载 DocTr 预训练权重并导出 ONNX(参考 [cvlab-stonybrook/DocTr](https://github.com/cvlab-stonybrook/DocTr)) → `models/docrect.onnx`
+- 在 `start.bat` 启动前设置 `DOCRECT_MODEL_PATH=models/docrect.onnx`
+- 缺模型时 dewarping 阶段自动跳过,其余阶段仍生效
+
+性能基线(1920×1080 测试图,CPU i7-12700,单阶段):
+- edge_crop: ≤ 200 ms
+- deskew: ≤ 100 ms
+- dewarping(DocRect ONNX,CPU): ≤ 8 s
+- clahe_enhance: ≤ 100 ms
+- 整体 ≤ 10 s
+
+依赖(`pip install -e ".[enhance]"`):`onnxruntime>=1.15`
+
+
 ## 公开文档版面分析（DLA）数据集训练验证
 
 ### 数据准备
