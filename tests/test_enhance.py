@@ -12,6 +12,7 @@ from service.exam.enhance import (
     _encode_jpeg_base64,
     _stage_clahe_enhance,
     _stage_deskew,
+    _stage_dewarping,
     _stage_edge_crop,
 )
 
@@ -164,3 +165,26 @@ def test_clahe_increases_luminance_diversity():
     assert post_std >= pre_std, (
         f"CLAHE should preserve or increase contrast (pre={pre_std:.2f}, post={post_std:.2f})"
     )
+
+
+def test_dewarping_skips_when_no_model(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr("service.exam.enhance._docrect_model_path", None)
+    img = _make_quad_test_image()
+    result = _stage_dewarping(img)
+    assert result.applied is False
+    assert "DOCRECT_UNAVAILABLE" in (result.error or "")
+
+
+def test_dewarping_passthrough_when_model_callable(monkeypatch: pytest.MonkeyPatch):
+    # Stub model: just return the input unchanged.
+    monkeypatch.setattr("service.exam.enhance._docrect_model_path", "/fake/path/model.onnx")
+
+    def fake_apply(img, model_path):
+        assert model_path == "/fake/path/model.onnx"
+        return img.copy()
+
+    monkeypatch.setattr("service.exam.enhance._apply_docrect", fake_apply)
+    img = _make_quad_test_image()
+    result = _stage_dewarping(img)
+    assert result.applied is True
+    assert result.image.shape == img.shape

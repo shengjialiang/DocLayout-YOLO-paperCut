@@ -212,3 +212,38 @@ def _stage_clahe_enhance(img_bgr: np.ndarray) -> StageResult:
         image=out, applied=True,
         duration_ms=int((time.perf_counter() - t0) * 1000),
     )
+
+
+# Module-level holder for the lazy-loaded DocRect model path. Set by
+# run_enhance_pipeline from the Config; None means the stage is skipped.
+_docrect_model_path: str | None = None
+
+
+def _apply_docrect(img_bgr: np.ndarray, model_path: str) -> np.ndarray:
+    """Run DocRect model. Stub returns input unchanged; real impl is added in Task 14."""
+    return img_bgr
+
+
+def _stage_dewarping(img_bgr: np.ndarray) -> StageResult:
+    """Run DocRect dewarping. Skipped (applied=False, error=DOCRECT_UNAVAILABLE)
+    when no model path has been configured."""
+    import time
+    t0 = time.perf_counter()
+    if not _docrect_model_path:
+        return StageResult(
+            image=img_bgr, applied=False,
+            duration_ms=int((time.perf_counter() - t0) * 1000),
+            error="DOCRECT_UNAVAILABLE: model path not configured",
+        )
+    try:
+        out = _apply_docrect(img_bgr, _docrect_model_path)
+    except Exception as e:
+        return StageResult(
+            image=img_bgr, applied=False,
+            duration_ms=int((time.perf_counter() - t0) * 1000),
+            error=f"DOCRECT_UNAVAILABLE: {e}",
+        )
+    return StageResult(
+        image=out, applied=True,
+        duration_ms=int((time.perf_counter() - t0) * 1000),
+    )
