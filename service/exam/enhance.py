@@ -16,8 +16,13 @@ from PIL import Image
 
 def _decode_image_bytes(image_bytes: bytes) -> np.ndarray:
     """Decode raw image bytes to BGR uint8 ndarray. Raises ValueError on failure."""
+    if not image_bytes:
+        raise ValueError("failed to decode image bytes")
     arr = np.frombuffer(image_bytes, dtype=np.uint8)
-    img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+    try:
+        img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+    except cv2.error as exc:
+        raise ValueError("failed to decode image bytes") from exc
     if img is None:
         raise ValueError("failed to decode image bytes")
     return img

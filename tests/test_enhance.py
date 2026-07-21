@@ -31,6 +31,11 @@ def test_decode_image_bytes_invalid_raises():
         _decode_image_bytes(b"not an image")
 
 
+def test_decode_image_bytes_empty_raises():
+    with pytest.raises(ValueError, match="failed to decode"):
+        _decode_image_bytes(b"")
+
+
 def test_encode_jpeg_base64_returns_data_url_and_raw_bytes():
     arr = np.full((48, 64, 3), (200, 200, 200), dtype=np.uint8)
     data_url, raw = _encode_jpeg_base64(arr)
