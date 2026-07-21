@@ -546,6 +546,119 @@
       showExamStatus('完成', 'success');
       examSubmitBtn.disabled = false;
     }
+
+    // ===== 增强图片 =====
+    const enhanceBtn = document.getElementById('submitExamEnhanceBtn');
+    const enhancePreview = document.getElementById('examEnhancePreview');
+    const enhanceOriginalImg = document.getElementById('enhanceOriginalImg');
+    const enhanceEnhancedImg = document.getElementById('enhanceEnhancedImg');
+    const enhanceAppliedNote = document.getElementById('enhanceAppliedNote');
+    const useEnhancedBtn = document.getElementById('useEnhancedBtn');
+    const useOriginalBtn = document.getElementById('useOriginalBtn');
+
+    function showEnhancePreview(originalUrl, enhancedUrl, appliedStages) {
+      enhanceOriginalImg.src = originalUrl;
+      enhanceEnhancedImg.src = enhancedUrl;
+      enhanceAppliedNote.textContent = appliedStages && appliedStages.length
+        ? `已应用阶段: ${appliedStages.join(' → ')}`
+        : '未应用任何增强(图片无明显失真或检测失败)';
+      enhancePreview.style.display = 'block';
+    }
+
+    function hideEnhancePreview() {
+      enhancePreview.style.display = 'none';
+      enhanceOriginalImg.src = '';
+      enhanceEnhancedImg.src = '';
+      enhanceAppliedNote.textContent = '';
+      delete enhanceEnhancedImg.dataset.bytesB64;
+    }
+
+    function refreshEnhanceButtonState() {
+      enhanceBtn.disabled = !examFile;
+    }
+
+    // Hook file-input events so the enhance button enables as soon as a file is picked.
+    examFileInput.addEventListener('change', refreshEnhanceButtonState);
+    examDropZone.addEventListener('drop', refreshEnhanceButtonState);
+
+    async function pollEnhanceUntilDone(submitUrl, deadlineMs) {
+      const deadline = Date.now() + deadlineMs;
+      while (Date.now() < deadline) {
+        await new Promise(res => setTimeout(res, 800));
+        const r = await fetch(submitUrl);
+        if (!r.ok) {
+          throw new Error('status ' + r.status);
+        }
+        const body = await r.json();
+        if (body.status === 'done') return body;
+        if (body.status === 'failed') {
+          throw new Error(body.error || 'unknown');
+        }
+        showExamStatus('增强中... 当前阶段=' + (body.progress || 'queued'), 'loading');
+      }
+      throw new Error('timeout after ' + deadlineMs + 'ms');
+    }
+
+    enhanceBtn.addEventListener('click', async () => {
+      if (!examFile) return;
+      enhanceBtn.disabled = true;
+      examSubmitBtn.disabled = true;
+      hideEnhancePreview();
+      showExamStatus('提交增强任务...', 'loading');
+
+      try {
+        const form = new FormData();
+        form.append('file', examFile);
+        const submit = await fetch('/predict/exam/enhance', { method: 'POST', body: form });
+        if (!submit.ok) {
+          const err = await submit.json().catch(() => ({ detail: submit.statusText }));
+          showExamStatus('提交失败: ' + (err.detail || submit.status), 'error');
+          return;
+        }
+        const sub = await submit.json();
+        showEnhancePreview(URL.createObjectURL(examFile), '', []);
+        showExamStatus('增强中... 任务 ID=' + sub.task_id, 'loading');
+        const done = await pollEnhanceUntilDone(sub.submit_url, 5 * 60 * 1000);
+        const final = done.final;
+        showEnhancePreview(
+          final.original_image,
+          final.enhanced_image,
+          final.applied_stages || []
+        );
+        // Stash the enhanced bytes for the "use enhanced" button.
+        enhanceEnhancedImg.dataset.bytesB64 = final.enhanced_bytes_b64;
+        showExamStatus('增强完成', 'success');
+      } catch (e) {
+        showExamStatus('增强失败: ' + e.message, 'error');
+      } finally {
+        enhanceBtn.disabled = !examFile;
+        examSubmitBtn.disabled = false;
+      }
+    });
+
+    useEnhancedBtn.addEventListener('click', async () => {
+      const b64 = enhanceEnhancedImg.dataset.bytesB64;
+      if (!b64) {
+        showExamStatus('没有可用的增强图', 'error');
+        return;
+      }
+      try {
+        const r = await fetch('data:application/octet-stream;base64,' + b64);
+        const blob = await r.blob();
+        const file = new File([blob], 'enhanced.jpg', { type: 'image/jpeg' });
+        examFile = file;
+        examDropZone.textContent = file.name + ' (' + Math.round(file.size / 1024) + ' KB) [已增强]';
+        hideEnhancePreview();
+        showExamStatus('已切换到增强图，请点击「开始识别」', 'success');
+      } catch (e) {
+        showExamStatus('切换失败: ' + e.message, 'error');
+      }
+    });
+
+    useOriginalBtn.addEventListener('click', () => {
+      hideEnhancePreview();
+      showExamStatus('使用原图识别，点击「开始识别」继续', 'success');
+    });
   </script>
 </body>
 </html>
