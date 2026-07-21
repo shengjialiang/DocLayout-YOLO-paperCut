@@ -247,3 +247,84 @@ def _stage_dewarping(img_bgr: np.ndarray) -> StageResult:
         image=out, applied=True,
         duration_ms=int((time.perf_counter() - t0) * 1000),
     )
+
+
+def run_enhance_pipeline(
+    task_id: str,
+    image_bytes: bytes,
+    params: dict,
+) -> None:
+    """Run decode → edge_crop → deskew → dewarping → clahe_enhance.
+
+    Updates the task state in-place via service.exam.tasks helpers.
+    `params` may carry:
+      - docrect_model_path: str | None — passed to _docrect_model_path for this task
+      - enable_deskew / enable_dewarp / enable_clahe: bool (all default True)
+    """
+    import time
+    from service.exam import tasks
+    from service.exam.schemas import EnhancementFinal
+
+    global _docrect_model_path
+    _docrect_model_path = params.get("docrect_model_path") or None
+
+    # Stage 0: decode (fatal if it fails)
+    t0 = time.perf_counter()
+    try:
+        img = _decode_image_bytes(image_bytes)
+    except ValueError as e:
+        tasks.update_stage(
+            task_id, "decode",
+            duration_ms=int((time.perf_counter() - t0) * 1000),
+            error=str(e),
+        )
+        tasks.mark_failed(task_id, f"decode failed: {e}")
+        return
+    tasks.update_stage(
+        task_id, "decode",
+        duration_ms=int((time.perf_counter() - t0) * 1000),
+        payload={"shape": list(img.shape)},
+    )
+
+    def run(name: str, fn, img, enabled: bool):
+        if not enabled:
+            tasks.update_stage(
+                task_id, name,
+                duration_ms=0,
+                payload={"applied": False, "skipped_reason": "DISABLED_BY_PARAMS"},
+            )
+            return img
+        result = fn(img)
+        tasks.update_stage(
+            task_id, name,
+            duration_ms=result.duration_ms,
+            payload={"applied": result.applied, **(result.payload or {})},
+            error=result.error,
+        )
+        return result.image if result.applied else img
+
+    img = run("edge_crop", _stage_edge_crop, img, True)
+    img = run("deskew", _stage_deskew, img, params.get("enable_deskew", True))
+    img = run("dewarping", _stage_dewarping, img, params.get("enable_dewarp", True))
+    img = run("clahe_enhance", _stage_clahe_enhance, img, params.get("enable_clahe", True))
+
+    # Build final result.
+    original_data_url, _ = _encode_jpeg_base64(_decode_image_bytes(image_bytes))
+    enhanced_data_url, enhanced_raw = _encode_jpeg_base64(img)
+    import base64 as _b64
+    enhanced_bytes_b64 = _b64.b64encode(enhanced_raw).decode("ascii")
+
+    applied = [
+        name for name in ("edge_crop", "deskew", "dewarping", "clahe_enhance")
+        if (tasks.get_task(task_id) or {}).get("stages", {}).get(name, {}).get("payload", {}).get("applied")
+    ]
+
+    h, w = img.shape[:2]
+    final = EnhancementFinal(
+        original_image=original_data_url,
+        enhanced_image=enhanced_data_url,
+        applied_stages=applied,
+        enhanced_bytes_b64=enhanced_bytes_b64,
+        output_size={"width": int(w), "height": int(h)},
+    )
+    tasks.mark_done_enhance(task_id, final)

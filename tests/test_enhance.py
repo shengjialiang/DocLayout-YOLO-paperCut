@@ -188,3 +188,75 @@ def test_dewarping_passthrough_when_model_callable(monkeypatch: pytest.MonkeyPat
     result = _stage_dewarping(img)
     assert result.applied is True
     assert result.image.shape == img.shape
+
+
+# --- Orchestrator tests ---
+
+from service.exam.enhance import run_enhance_pipeline
+from service.exam import tasks
+from service.exam.schemas import EnhancementFinal
+
+
+def _patch_all_stages_apply(monkeypatch: pytest.MonkeyPatch):
+    """Make every stage return the input unchanged but applied=True. Used to
+    test the orchestrator wiring without depending on real CV outcomes."""
+    def passthrough_stage(img):
+        from service.exam.enhance import StageResult
+        return StageResult(image=img, applied=True)
+    for name in ("_stage_edge_crop", "_stage_deskew", "_stage_clahe_enhance", "_stage_dewarping"):
+        monkeypatch.setattr(f"service.exam.enhance.{name}", passthrough_stage)
+
+
+def test_run_enhance_pipeline_marks_done_with_enhancement_final(monkeypatch: pytest.MonkeyPatch):
+    _patch_all_stages_apply(monkeypatch)
+    monkeypatch.setattr("service.exam.enhance._docrect_model_path", None)
+    tasks.reset_for_tests()
+    tid = tasks.create_task()
+
+    raw = _make_solid_jpeg_bytes(width=100, height=80, color=(180, 180, 180))
+    run_enhance_pipeline(tid, raw, params={"docrect_model_path": None})
+
+    state = tasks.get_task(tid)
+    assert state is not None
+    assert state["status"] == "done"
+    assert state["final"] is not None
+    # final is an EnhancementFinal dataclass
+    assert isinstance(state["final"], EnhancementFinal)
+    assert state["final"].applied_stages  # at least one stage applied
+    assert state["final"].output_size["width"] > 0
+    assert state["final"].output_size["height"] > 0
+    # Stages table has entries
+    assert "decode" in state["stages"]
+    assert "edge_crop" in state["stages"]
+
+
+def test_run_enhance_pipeline_marks_failed_on_decode_error(monkeypatch: pytest.MonkeyPatch):
+    tasks.reset_for_tests()
+    tid = tasks.create_task()
+    run_enhance_pipeline(tid, b"garbage", params={})
+    state = tasks.get_task(tid)
+    assert state is not None
+    assert state["status"] == "failed"
+    assert "decode failed" in (state["error"] or "")
+
+
+def test_run_enhance_pipeline_all_stages_skip_keeps_original(monkeypatch: pytest.MonkeyPatch):
+    """When every stage skips, enhanced_image == original_image."""
+    def always_skip(img):
+        from service.exam.enhance import StageResult
+        return StageResult(image=img, applied=False)
+    for name in ("_stage_edge_crop", "_stage_deskew", "_stage_clahe_enhance", "_stage_dewarping"):
+        monkeypatch.setattr(f"service.exam.enhance.{name}", always_skip)
+
+    tasks.reset_for_tests()
+    tid = tasks.create_task()
+    raw = _make_solid_jpeg_bytes(width=80, height=60, color=(200, 200, 200))
+    run_enhance_pipeline(tid, raw, params={})
+
+    state = tasks.get_task(tid)
+    assert state is not None
+    assert state["status"] == "done"
+    final = state["final"]
+    assert isinstance(final, EnhancementFinal)
+    assert final.applied_stages == []
+    assert final.original_image == final.enhanced_image
