@@ -93,6 +93,9 @@ exam = [
     "paddleocr>=2.7,<3.0",
     "paddlepaddle>=2.6,<3.0",
 ]
+enhance = [
+    "onnxruntime>=1.15",
+]
 dev = [
     "ipython",
     "check-manifest",
