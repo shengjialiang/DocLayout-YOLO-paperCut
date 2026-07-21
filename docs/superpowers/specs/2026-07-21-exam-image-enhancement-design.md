@@ -56,13 +56,16 @@
 
 **修改的文件**:
 - 新增: `service/exam/enhance.py`
+- 新增: `service/exam/schemas.py` 中新增 `EnhancementFinal` 与 `EnhancementStatusResponse`(Pydantic 模型)
 - 新增: `tests/test_enhance.py`, `tests/test_enhance_api.py`
-- 修改: `service/app.py`(新增 2 个端点)
-- 修改: `service/exam/tasks.py`(支持 `enhance:` 前缀的任务 key)
+- 修改: `service/app.py`(新增 2 个端点 + 用 `EnhancementStatusResponse` 序列化)
+- 修改: `service/exam/tasks.py`(新增 `mark_done_enhance` 函数,因为 `mark_done` 当前签名要求 `FinalResult`)
 - 修改: `service/config.py`(新增 `docrect_model_path` 字段)
 - 修改: `service/static/index.html`(新增按钮 + 预览区 + 增强图识别逻辑)
 - 修改: `pyproject.toml`(新增 `[project.optional-dependencies].enhance`)
 - 修改: `start.bat`(检测 DocRect 模型文件)
+
+**任务命名空间**:`tasks._store` 的 key 是 12 字符 hex uuid,识别任务和增强任务共用同一命名空间,因 uuid 随机性,碰撞概率可忽略,不需要额外前缀。
 
 **完全不动**: `service/exam/pipeline.py`、`service/exam/ocr.py`、`service/exam/geometry.py`、`service/exam/expand.py`、`service/inference.py`
 
@@ -104,16 +107,46 @@ class EnhancementFinal:
     enhanced_image: str        # data:image/jpeg;base64,...
     applied_stages: list[str]  # ["edge_crop", "deskew", "clahe", ...]
     enhanced_bytes_b64: str    # 原始 JPEG bytes 的 base64 — 前端可直接 fetch().blob() 还原 Blob
-    output_size: tuple[int, int]  # (width, height)
+    output_size: dict[str, int]  # {"width": int, "height": int}
 ```
 
-### 4.3 DocTr 集成策略
+### 4.2a Pydantic schema(放在 `service/exam/schemas.py`)
 
-- **首选**:`onnxruntime`(CPU 推理快,体积小)→ 需要 `models/docrect.onnx`(~15 MB)
-- **备选**:PyTorch 直接推理(`models/DocTr_cached.pth` ~80 MB)
+```python
+class EnhancementFinal(BaseModel):
+    """增强流水线最终输出。与 FinalResult 同级,独立 schema。"""
+    original_image: str         # data:image/jpeg;base64,...
+    enhanced_image: str         # data:image/jpeg;base64,...
+    applied_stages: list[str]
+    enhanced_bytes_b64: str     # 原始 JPEG 的 base64
+    output_size: dict[str, int] # {"width": int, "height": int}
+
+
+class EnhancementStatusResponse(BaseModel):
+    """GET /predict/exam/enhance/<id>/status 的响应。"""
+    task_id: str
+    status: Literal["queued", "running", "done", "failed", "expired"]
+    progress: str | None = None
+    stages: dict[str, StageResult]
+    final: EnhancementFinal | None = None
+    error: str | None = None
+```
+
+### 4.2b `tasks.py` 调整
+
+现有 `mark_done(task_id, final: FinalResult)` 签名强类型绑定 `FinalResult`。增强任务用的是 `EnhancementFinal`,需要新增 `mark_done_enhance(task_id, final: EnhancementFinal)`,内部逻辑相同(只是写 `state["final"] = final`),调用方按场景选 `mark_done` 或 `mark_done_enhance`。
+
+`create_task` / `update_stage` / `mark_failed` / `get_task` 不需要修改,直接复用。
+
+### 4.3 DocTr(dewarping)集成策略
+
+> **命名约定**:上游预训练模型项目是 [cvlab-stonybrook/DocTr](https://github.com/cvlab-stonybrook/DocTr)。本文档中 **DocTr** 指该模型本身,**DocRect** 指我们内部的 wrapper(环境变量 / 配置文件路径都以 `DOCRECT_*` / `docrect_*` 命名)。二者指同一份模型文件。
+
+- **首选**:`onnxruntime`(CPU 推理快,体积小)→ 需要 `models/docrect.onnx`(~15 MB,自 DocTr 的 `.pth` 导出)
+- **备选**:PyTorch 直接推理 `DocTr_cached.pth`(~80 MB)
 - 路径由环境变量 `DOCRECT_MODEL_PATH` 指定
 - 模型懒加载:第一次进入阶段时初始化,后续复用(全局单例)
-- **若文件不存在**:启动打 `[INFO]`,dewarping 阶段跳过,其余阶段正常运行
+- **若文件不存在**:启动打 `[INFO] DocRect model not found at ...; dewarping stage will be skipped`,dewarping 阶段跳过,其余阶段正常运行
 
 ### 4.4 单阶段失败的语义
 
