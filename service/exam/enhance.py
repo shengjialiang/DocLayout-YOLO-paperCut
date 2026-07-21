@@ -71,6 +71,20 @@ class StageResult:
 # Minimum allowed output dimension (any smaller is treated as a degenerate warp).
 _MIN_CROP_DIM = 64
 
+# A real document paper typically occupies a substantial portion of the frame
+# (≥ 30% in practice). When edge_crop finds only a tiny 4-vertex contour
+# (e.g. a book corner, sticker, or texture fragment in a real-world photo),
+# warping to it catastrophically shrinks the image — the result is unusable.
+# Guard: the candidate quad's area must be at least this fraction of the
+# whole image. Below the threshold we skip with error=QUAD_TOO_SMALL.
+_MIN_QUAD_AREA_RATIO = 0.15
+
+# Allowed aspect-ratio range for the warped output. Real documents are
+# typically in [0.5, 2.0]; we use a wider band [0.2, 5.0] to tolerate
+# folded/sticky notes and panoramic receipts, while excluding extreme strips.
+_MIN_ASPECT = 0.2
+_MAX_ASPECT = 5.0
+
 
 def _stage_edge_crop(img_bgr: np.ndarray) -> StageResult:
     """Detect the largest 4-point contour and warp the image to its bounding rect.
@@ -122,12 +136,47 @@ def _stage_edge_crop(img_bgr: np.ndarray) -> StageResult:
     height_r = np.linalg.norm(ordered[2] - ordered[1])
     natural_w = int(max(width_top, width_bot))
     natural_h = int(max(height_l, height_r))
+
+    # Guard 1: reject if the quad is too small relative to the whole image.
+    # Without this, a real-world photo containing a small 4-vertex convex
+    # fragment (book corner, sticker, texture) gets warped to a tiny unusable
+    # image — see test_edge_crop_skips_when_quad_is_tiny_relative_to_image.
+    img_h, img_w = img_bgr.shape[:2]
+    quad_area = float(cv2.contourArea(ordered))
+    img_area = float(img_h * img_w)
+    if img_area > 0 and (quad_area / img_area) < _MIN_QUAD_AREA_RATIO:
+        return StageResult(
+            image=img_bgr, applied=False,
+            duration_ms=int((time.perf_counter() - t0) * 1000),
+            error="QUAD_TOO_SMALL",
+            payload={
+                "quad_area_ratio": quad_area / img_area,
+                "min_required_ratio": _MIN_QUAD_AREA_RATIO,
+            },
+        )
+
     if natural_w < _MIN_CROP_DIM or natural_h < _MIN_CROP_DIM:
         return StageResult(
             image=img_bgr, applied=False,
             duration_ms=int((time.perf_counter() - t0) * 1000),
             error="NO_QUAD_FOUND",
         )
+
+    # Guard 2: reject extreme aspect ratios (very thin strips). Real documents
+    # are roughly portrait/landscape; a 6:1 strip is not a document.
+    aspect = natural_w / max(natural_h, 1)
+    if aspect < _MIN_ASPECT or aspect > _MAX_ASPECT:
+        return StageResult(
+            image=img_bgr, applied=False,
+            duration_ms=int((time.perf_counter() - t0) * 1000),
+            error="ASPECT_OUT_OF_RANGE",
+            payload={
+                "aspect_ratio": aspect,
+                "min_allowed": _MIN_ASPECT,
+                "max_allowed": _MAX_ASPECT,
+            },
+        )
+
     out_w, out_h = natural_w, natural_h
 
     dst = np.array([[0, 0], [out_w - 1, 0], [out_w - 1, out_h - 1], [0, out_h - 1]], dtype=np.float32)

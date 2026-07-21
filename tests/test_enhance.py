@@ -94,6 +94,40 @@ def test_edge_crop_skips_when_result_too_small():
     assert result.applied is False
 
 
+def test_edge_crop_skips_when_quad_is_tiny_relative_to_image():
+    """Reproduces the WeChat-photo bug: a small 4-vertex convex contour in a
+    large real-world scene (e.g. a book corner, sticker) must NOT be warped to.
+    """
+    # Simulate the WeChat photo: large portrait scene with a tiny "quad-like"
+    # contour somewhere. Image is 1706×1279 (~2.18M px).
+    img = np.full((1706, 1279, 3), 80, dtype=np.uint8)
+    # Add a small but detectable quad (121×79 = 9559 px ≈ 0.4% of image).
+    quad = np.array([[10, 750], [130, 745], [132, 825], [11, 830]], dtype=np.int32)
+    cv2.fillPoly(img, [quad], (240, 240, 240))
+    result = _stage_edge_crop(img)
+    assert result.applied is False, (
+        f"edge_crop should skip when quad area is < 1% of image; "
+        f"got applied=True output={result.image.shape}"
+    )
+    assert result.error in ("NO_QUAD_FOUND", "QUAD_TOO_SMALL")
+    assert result.image is img
+
+
+def test_edge_crop_skips_extreme_aspect_ratio():
+    """A large-area strip that passes the size threshold but has an extreme
+    aspect ratio (e.g. 8:1) is not a real document and must be skipped.
+    """
+    # 1500×400 = 600000 px image; strip 1200×200 = 240000 px (40% of image — way
+    # above area-ratio guard of 15%, but ratio = 6 is well outside [0.2, 5.0]).
+    img = np.full((400, 1500, 3), 60, dtype=np.uint8)
+    strip = np.array([[100, 100], [1300, 105], [1300, 305], [100, 300]], dtype=np.int32)
+    cv2.fillPoly(img, [strip], (240, 240, 240))
+    result = _stage_edge_crop(img)
+    assert result.applied is False, (
+        f"edge_crop should skip 6:1 strip; got applied=True output={result.image.shape}"
+    )
+
+
 def _rotate_image(img: np.ndarray, angle_deg: float) -> np.ndarray:
     h, w = img.shape[:2]
     M = cv2.getRotationMatrix2D((w / 2, h / 2), angle_deg, 1.0)
