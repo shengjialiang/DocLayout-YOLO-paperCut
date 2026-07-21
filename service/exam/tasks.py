@@ -98,6 +98,21 @@ def mark_done(task_id: str, final: FinalResult) -> None:
     _store.move_to_end(task_id)
 
 
+def mark_done_enhance(task_id: str, final) -> None:
+    """Mark enhancement task as done with EnhancementFinal. Mirrors mark_done but
+    accepts the EnhancementFinal dataclass instead of FinalResult. Internal logic
+    is identical — only the type hint and the docstring differ.
+    """
+    state = _store.get(task_id)
+    if state is None:
+        return
+    state["final"] = final
+    state["status"] = "done"
+    state["progress"] = None
+    state["updated_at"] = _now()
+    _store.move_to_end(task_id)
+
+
 def mark_failed(task_id: str, error: str) -> None:
     """Mark task as failed with error message."""
     state = _store.get(task_id)
