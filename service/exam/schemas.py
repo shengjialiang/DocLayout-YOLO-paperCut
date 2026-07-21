@@ -75,3 +75,22 @@ class TaskStatusResponse(BaseModel):
     @classmethod
     def make_submit_url(cls, task_id: str) -> str:
         return f"/predict/exam/{task_id}/status"
+
+
+class EnhancementFinal(BaseModel):
+    """增强流水线最终输出。和 FinalResult 平级,独立字段集。"""
+    original_image: str = Field(..., description="data:image/jpeg;base64,...")
+    enhanced_image: str = Field(..., description="data:image/jpeg;base64,...")
+    applied_stages: list[str] = Field(default_factory=list)
+    enhanced_bytes_b64: str = Field(..., description="raw JPEG bytes, base64 encoded")
+    output_size: dict[str, int] = Field(..., description='{"width": int, "height": int}')
+
+
+class EnhancementStatusResponse(BaseModel):
+    """GET /predict/exam/enhance/<id>/status 的响应体。"""
+    task_id: str
+    status: Literal["queued", "running", "done", "failed", "expired"]
+    progress: str | None = None
+    stages: dict[str, StageResult] = Field(default_factory=dict)
+    final: EnhancementFinal | None = None
+    error: str | None = None
